@@ -6,6 +6,7 @@ import {
   ArrowUp,
   ArrowDown,
   Plus, 
+  PlusCircle,
   LogIn,
   X, 
   Book, 
@@ -45,7 +46,12 @@ import {
   Archive,
   Bell,
   Clock,
-  AlarmClock
+  AlarmClock,
+  Sunrise,
+  Sunset,
+  CloudSun,
+  Stars,
+  Dumbbell
 } from 'lucide-react';
 import { 
   format, 
@@ -80,7 +86,7 @@ import {
 import { motion, AnimatePresence, Reorder, useDragControls } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { storage, type StudySession, type AppSettings, type UserProfile, type TimerState, getWeekDays, type RoutineItem, safeParse } from './types';
+import { storage, type StudySession, type AppSettings, type UserProfile, type TimerState, getWeekDays, type RoutineItem, safeParse, type PrayerSettings, type PrayerTime, type ScheduleItem } from './types';
 import { supabase } from './lib/supabase';
 import { AuthPage } from './components/AuthPage';
 import { notificationService } from './lib/notifications';
@@ -337,6 +343,227 @@ const RoutineCard = ({
   );
 };
 
+const PrayerModal = ({ isOpen, onClose, settings, onSave, darkMode }: any) => {
+  const [localSettings, setLocalSettings] = useState<PrayerSettings>(settings);
+  const [isFetching, setIsFetching] = useState(false);
+
+  useEffect(() => {
+    if (settings) {
+      setLocalSettings(settings);
+    }
+  }, [settings]);
+
+  const handleTimeChange = (name: string, time: string) => {
+    setLocalSettings(prev => ({
+      ...prev,
+      times: prev.times.map(t => t.name === name ? { ...t, time, isManual: true } : t)
+    }));
+  };
+
+  const handleToggle = (name: string) => {
+    setLocalSettings(prev => ({
+      ...prev,
+      times: prev.times.map(t => t.name === name ? { ...t, enabled: !t.enabled } : t)
+    }));
+  };
+
+  const fetchPrayerTimes = async () => {
+    setIsFetching(true);
+    try {
+      // Coordinates for Sherpur, Bogura (24.6775, 89.4169)
+      // Using Method 13 (Islamic Foundation, Bangladesh) for maximum accuracy
+      // This matches the official timings used in Bangladesh
+      const response = await fetch('https://api.aladhan.com/v1/timings?latitude=24.6775&longitude=89.4169&method=13');
+      const data = await response.json();
+      if (data.code === 200) {
+        const timings = data.data.timings;
+        const newTimes = localSettings.times.map(t => {
+          if (t.isManual) return t; // Don't update if user set it manually
+          let apiName = t.name;
+          if (t.name === 'Tahajjud') apiName = 'Midnight';
+          if (t.name === 'Gym') return t; // Don't update Gym time from API
+          
+          if (timings[apiName]) {
+             // Aladhan returns HH:mm, which is perfect for our input
+             return { ...t, time: timings[apiName], isManual: false };
+          }
+          return t;
+        });
+        setLocalSettings(prev => ({ ...prev, times: newTimes, last_updated: new Date().toISOString() }));
+      }
+    } catch (error) {
+      console.error('Error fetching prayer times:', error);
+    } finally {
+      setIsFetching(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      const today = format(new Date(), 'yyyy-MM-dd');
+      const lastUpdate = localSettings.last_updated ? format(new Date(localSettings.last_updated), 'yyyy-MM-dd') : '';
+      
+      if (lastUpdate !== today) {
+        fetchPrayerTimes();
+      }
+    }
+  }, [isOpen]);
+
+  const clearTime = (name: string) => {
+    setLocalSettings(prev => ({
+      ...prev,
+      times: prev.times.map(t => t.name === name ? { ...t, time: '', isManual: false } : t)
+    }));
+  };
+
+  const formatTo12h = (time: string) => {
+    if (!time) return '';
+    const [hours, minutes] = time.split(':');
+    const h = parseInt(hours);
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const h12 = h % 12 || 12;
+    return `${h12}:${minutes} ${ampm}`;
+  };
+
+  const clearAllTimes = () => {
+    setLocalSettings(prev => ({
+      ...prev,
+      times: prev.times.map(t => ({ ...t, time: '' }))
+    }));
+  };
+
+  const getPrayerIcon = (name: string) => {
+    switch (name) {
+      case 'Fajr': return <Sunrise size={18} />;
+      case 'Dhuhr': return <Sun size={18} />;
+      case 'Asr': return <CloudSun size={18} />;
+      case 'Maghrib': return <Sunset size={18} />;
+      case 'Isha': return <Moon size={18} />;
+      case 'Tahajjud': return <Stars size={18} />;
+      case 'Gym': return <Dumbbell size={18} />;
+      default: return <Clock size={18} />;
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.9, y: 20 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        className={cn(
+          "w-full max-w-md rounded-[2.5rem] overflow-hidden shadow-2xl border",
+          darkMode ? "bg-[#111827] text-white border-white/5" : "bg-white text-slate-900 border-slate-200"
+        )}
+      >
+        <div className="p-5 sm:p-8 space-y-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-3 rounded-2xl bg-indigo-500/10 text-indigo-500">
+                <Clock size={24} />
+              </div>
+              <div>
+                <h2 className="text-xl font-black tracking-tight">PRAYER TIMES</h2>
+                <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-50">Sherpur, Bogura</p>
+              </div>
+            </div>
+            <button onClick={onClose} className={cn(
+              "p-2 rounded-xl transition-colors",
+              darkMode ? "hover:bg-white/5" : "hover:bg-slate-100"
+            )}>
+              <X size={24} />
+            </button>
+          </div>
+
+          <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-2 custom-scrollbar">
+            {localSettings.times.map((prayer) => (
+                <div 
+                  key={prayer.name}
+                  className={cn(
+                    "flex items-center justify-between p-3 sm:p-4 min-h-[100px] rounded-[2rem] border transition-all group",
+                    darkMode 
+                      ? "bg-white/5 border-white/5 hover:bg-white/[0.08]" 
+                      : "bg-slate-50 border-slate-100 hover:bg-slate-100"
+                  )}
+                >
+                  <div className="flex items-center gap-2 sm:gap-4">
+                    <div className={cn(
+                      "w-10 h-10 sm:w-12 sm:h-12 rounded-2xl flex items-center justify-center transition-all shadow-sm shrink-0",
+                      darkMode ? "bg-white/5 text-indigo-400" : "bg-white text-indigo-500 border border-slate-100"
+                    )}>
+                      {getPrayerIcon(prayer.name)}
+                    </div>
+                    <span className="font-black text-[11px] sm:text-[13px] uppercase tracking-[0.1em] sm:tracking-[0.15em] opacity-80 leading-tight">{prayer.name}</span>
+                  </div>
+                  
+                  <div className="flex items-center gap-2">
+                    <div className={cn(
+                      "flex items-center px-2 sm:px-4 py-3 sm:py-5 rounded-2xl border transition-all relative group/time",
+                      darkMode ? "bg-black/20 border-white/5" : "bg-white border-slate-200 shadow-sm"
+                    )}>
+                      <div className="flex flex-col items-center">
+                        <input 
+                          type="time" 
+                          value={prayer.time}
+                          onChange={(e) => handleTimeChange(prayer.name, e.target.value)}
+                          className={cn(
+                            "bg-transparent font-black text-sm sm:text-base outline-none focus:text-indigo-500 transition-colors w-20 sm:w-24 text-center",
+                            darkMode ? "text-white" : "text-slate-900"
+                          )}
+                        />
+                        {prayer.time && (
+                          <span className={cn(
+                            "text-[8px] sm:text-[9px] font-black tracking-tighter opacity-40",
+                            darkMode ? "text-white" : "text-slate-900"
+                          )}>
+                            {formatTo12h(prayer.time)}
+                          </span>
+                        )}
+                      </div>
+                      {prayer.isManual && prayer.time && (
+                        <button 
+                          onClick={() => clearTime(prayer.name)}
+                          className={cn(
+                            "absolute right-1 bottom-1 w-5 h-5 rounded-full flex items-center justify-center transition-all shadow-md z-10",
+                            darkMode ? "bg-red-500/40 text-white hover:bg-red-500/60" : "bg-red-500 text-white hover:bg-red-600"
+                          )}
+                        >
+                          <X size={10} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+            ))}
+          </div>
+
+          <div className="flex flex-col gap-3 pt-4">
+            <button 
+              onClick={fetchPrayerTimes}
+              disabled={isFetching}
+              className={cn(
+                "w-full py-4 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] flex items-center justify-center gap-2 transition-all",
+                darkMode ? "bg-white/5 hover:bg-white/10 text-white" : "bg-slate-100 hover:bg-slate-200 text-slate-600"
+              )}
+            >
+              <RefreshCw size={14} className={cn(isFetching && "animate-spin")} />
+              {isFetching ? 'FETCHING...' : 'UPDATE'}
+            </button>
+            
+            <button 
+              onClick={() => onSave(localSettings)}
+              className="w-full py-4 rounded-2xl bg-indigo-500 hover:bg-indigo-600 text-white font-black text-[10px] uppercase tracking-[0.2em] shadow-xl shadow-indigo-500/20 transition-all"
+            >
+              SAVE SETTINGS
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
 const RoutinePage = ({ 
   routines, 
   onSaveRoutine, 
@@ -345,6 +572,7 @@ const RoutinePage = ({
   onPermanentlyDeleteRoutine,
   onAddTask,
   onSync,
+  onOpenPrayerTimes,
   isSyncing,
   isRestored,
   user, 
@@ -357,6 +585,7 @@ const RoutinePage = ({
   onPermanentlyDeleteRoutine: (id: string) => Promise<void>,
   onAddTask: (subject: string, chapter: string, topics: string, date: string, end_date?: string, reminder_time?: string) => Promise<void>,
   onSync: () => Promise<void>,
+  onOpenPrayerTimes: () => void,
   isSyncing: boolean,
   isRestored: boolean,
   user: any,
@@ -447,15 +676,46 @@ const RoutinePage = ({
       // Determine which dates to print (unique dates in the range that have routines)
       const allDatesToPrint = Object.keys(groupedRoutines).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
 
-      // Chunk dates into pages (7 days per page)
-      const daysPerPage = 7;
-      const dateChunks = [];
-      for (let i = 0; i < allDatesToPrint.length; i += daysPerPage) {
-        dateChunks.push(allDatesToPrint.slice(i, i + daysPerPage));
-      }
+      // Dynamic chunking to prevent page breaks cutting through rows
+      const dateChunks: string[][] = [];
+      let currentChunk: string[] = [];
+      let estimatedHeight = 0;
+      // A4 is 210x297mm. At 800px width, height is ~1131px.
+      // We use a safe limit of 920px to account for margins and header/footer.
+      const maxHeight = 920; 
+
+      allDatesToPrint.forEach(dateStr => {
+        const dayRoutines = groupedRoutines[dateStr] || [];
+        // Estimate height for this date block
+        let dayHeight = 0;
+        if (dayRoutines.length === 0) {
+          dayHeight = 120;
+        } else {
+          let routinesHeight = 0;
+          dayRoutines.forEach(r => {
+            const topicsLineCount = r.topics ? r.topics.split('\n').length : 1;
+            // Each topic line is roughly 24px, plus base row height
+            routinesHeight += 65 + (topicsLineCount * 24);
+          });
+          // Date cell content (Date + Day + Start/End) needs at least ~140px
+          dayHeight = Math.max(routinesHeight, 140);
+        }
+        
+        if (estimatedHeight + dayHeight > maxHeight && currentChunk.length > 0) {
+          dateChunks.push(currentChunk);
+          currentChunk = [dateStr];
+          estimatedHeight = 380 + dayHeight; // Base header/footer/padding height (~380px)
+        } else {
+          if (currentChunk.length === 0) estimatedHeight = 380; 
+          currentChunk.push(dateStr);
+          estimatedHeight += dayHeight;
+        }
+      });
+      if (currentChunk.length > 0) dateChunks.push(currentChunk);
 
       const pdf = new jsPDF('p', 'mm', 'a4');
       const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfPageHeight = pdf.internal.pageSize.getHeight();
       
       for (let i = 0; i < dateChunks.length; i++) {
         if (i > 0) pdf.addPage();
@@ -531,12 +791,20 @@ const RoutinePage = ({
               htmlContent += `
                 <tr style="background-color: ${rowBg};">
                   ${rIdx === 0 ? `
-                    <td style="padding: 20px 16px; border-bottom: ${isLastDate ? 'none' : '1px solid #e2e8f0'}; border-right: 1px solid #e2e8f0; vertical-align: top; width: 160px;" rowspan="${dayRoutines.length}">
-                      <div style="font-weight: 900; color: #1e293b; font-size: 16px;">${format(new Date(dateStr), 'MMM d')}</div>
-                      <div style="font-size: 12px; color: #64748b; margin-top: 4px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">${format(new Date(dateStr), 'EEEE')}</div>
-                      <div style="margin-top: 12px; font-size: 10px; color: #94a3b8; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; border-top: 1px solid #e2e8f0; padding-top: 8px;">
-                        Start: ${format(new Date(r.date), 'MMM d')}
-                        ${r.end_date ? `<br/>End: ${format(new Date(r.end_date), 'MMM d')}` : ''}
+                    <td style="padding: 24px 16px; border-bottom: ${isLastDate ? 'none' : '1px solid #e2e8f0'}; border-right: 1px solid #e2e8f0; vertical-align: top; width: 150px; min-width: 150px;" rowspan="${dayRoutines.length}">
+                      <div style="font-weight: 900; color: #1e293b; font-size: 18px; line-height: 1;">${format(new Date(dateStr), 'MMM d')}</div>
+                      <div style="font-size: 11px; color: #64748b; margin-top: 6px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; line-height: 1.2;">${format(new Date(dateStr), 'EEEE')}</div>
+                      <div style="margin-top: 16px; font-size: 10px; color: #475569; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em; border-top: 1.5px solid #f1f5f9; padding-top: 10px; line-height: 1.5;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                          <span style="color: #94a3b8; font-weight: 600;">START</span>
+                          <span>${format(new Date(r.date), 'MMM d')}</span>
+                        </div>
+                        ${r.end_date ? `
+                        <div style="display: flex; justify-content: space-between;">
+                          <span style="color: #94a3b8; font-weight: 600;">END</span>
+                          <span>${format(new Date(r.end_date), 'MMM d')}</span>
+                        </div>
+                        ` : ''}
                       </div>
                     </td>
                   ` : ''}
@@ -582,24 +850,22 @@ const RoutinePage = ({
         
         document.body.removeChild(tempContainer);
         
-        const imgData = canvas.toDataURL('image/jpeg', 1.0);
+        const imgData = canvas.toDataURL('image/jpeg', 0.95);
         const imgProps = pdf.getImageProperties(imgData);
-        const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
-        const pdfPageHeight = pdf.internal.pageSize.getHeight();
         
-        let heightLeft = pdfHeight;
-        let position = 0;
-
-        // Add the first page for this chunk
-        pdf.addImage(imgData, 'JPEG', 0, position, pdfWidth, pdfHeight);
-        heightLeft -= pdfPageHeight;
-
-        // If the chunk overflows the page, add more pages
-        while (heightLeft > 0) {
-          position = heightLeft - pdfHeight;
-          pdf.addPage();
-          pdf.addImage(imgData, 'JPEG', 0, position, pdfWidth, pdfHeight);
-          heightLeft -= pdfPageHeight;
+        // Calculate dimensions to fit A4 width
+        const displayWidth = pdfWidth;
+        const displayHeight = (imgProps.height * displayWidth) / imgProps.width;
+        
+        // If the content is still too tall for the page, we scale it down to fit
+        // This ensures nothing is cut off on A4
+        if (displayHeight > pdfPageHeight) {
+          const scaleFactor = pdfPageHeight / displayHeight;
+          const finalWidth = displayWidth * scaleFactor;
+          const xOffset = (pdfWidth - finalWidth) / 2;
+          pdf.addImage(imgData, 'JPEG', xOffset, 0, finalWidth, pdfPageHeight);
+        } else {
+          pdf.addImage(imgData, 'JPEG', 0, 0, displayWidth, displayHeight);
         }
       }
 
@@ -636,8 +902,8 @@ const RoutinePage = ({
         chapter,
         topics,
         date: selectedDate,
-        end_date: selectedEndDate || undefined,
-        reminder_time: reminderTime || undefined,
+        end_date: selectedEndDate || null,
+        reminder_time: reminderTime || null,
         countdown: 0
       });
       resetForm();
@@ -714,17 +980,28 @@ const RoutinePage = ({
             <button
               onClick={() => setView('deleted')}
               className={cn(
-                "px-4 py-2.5 rounded-2xl text-[10px] sm:text-xs font-black transition-all shrink-0",
+                "px-4 py-2.5 rounded-2xl text-[10px] sm:text-xs font-black transition-all shrink-0 flex items-center justify-center",
                 view === 'deleted' 
                   ? "bg-transparent text-indigo-500 scale-105" 
                   : "text-slate-500 hover:text-indigo-500"
               )}
+              title="Trash"
             >
-              TRASH
+              <Trash2 size={18} />
             </button>
           </div>
 
           <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={onOpenPrayerTimes}
+              className={cn(
+                "px-3 py-2.5 rounded-2xl text-[10px] sm:text-xs font-black transition-all flex items-center justify-center",
+                darkMode ? "text-slate-400 hover:text-indigo-400" : "text-slate-500 hover:text-indigo-500"
+              )}
+              title="Prayer Times"
+            >
+              <Clock size={18} />
+            </button>
             <div className="relative">
               <button
                 onClick={() => setShowPrintOptions(!showPrintOptions)}
@@ -1347,6 +1624,22 @@ export default function App() {
   const [isTrashOpen, setIsTrashOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isRestored, setIsRestored] = useState(false);
+  const [isPrayerModalOpen, setIsPrayerModalOpen] = useState(false);
+  const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+  const [schedules, setSchedules] = useState<ScheduleItem[]>([]);
+  const lastNotifiedMinute = useRef<string>('');
+  const [prayerSettings, setPrayerSettings] = useState<PrayerSettings>({
+    times: [
+      { name: 'Fajr', time: '04:30', enabled: true },
+      { name: 'Dhuhr', time: '12:15', enabled: true },
+      { name: 'Asr', time: '16:30', enabled: true },
+      { name: 'Maghrib', time: '18:15', enabled: true },
+      { name: 'Isha', time: '19:45', enabled: true },
+      { name: 'Tahajjud', time: '03:00', enabled: true },
+      { name: 'Gym', time: '07:00', enabled: true },
+    ],
+    location: 'Sherpur, Bogura'
+  });
   const [user, setUser] = useState<any>(null);
   const [isGuestMode, setIsGuestMode] = useState(false);
   const [isRecovering, setIsRecovering] = useState(false);
@@ -1417,15 +1710,28 @@ export default function App() {
       }
     };
 
-    // If timer is active, we save every 10 seconds (throttled by the 30s check for Supabase)
-    // If timer is NOT active, we save immediately (debounced)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        saveTimerState(true);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    let interval: NodeJS.Timeout;
+    let debounceTimer: NodeJS.Timeout;
+
     if (isTimerActive) {
-      const interval = setInterval(() => saveTimerState(), 10000);
-      return () => clearInterval(interval);
+      interval = setInterval(() => saveTimerState(), 10000);
     } else {
-      const debounceTimer = setTimeout(() => saveTimerState(true), 2000);
-      return () => clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => saveTimerState(true), 2000);
     }
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (interval) clearInterval(interval);
+      if (debounceTimer) clearTimeout(debounceTimer);
+    };
   }, [timerTotalSeconds, timerTimeLeft, isTimerActive, user, isLoading]);
 
   // Timer Interval
@@ -1440,6 +1746,40 @@ export default function App() {
     }
     return () => clearInterval(interval);
   }, [isTimerActive, timerTimeLeft]);
+
+  // Prayer Notifications
+  useEffect(() => {
+    if (!settings.notifications) return;
+
+    const checkPrayerTimes = () => {
+      const now = new Date();
+      const currentTime = format(now, 'HH:mm');
+      
+      // Prevent duplicate notifications in the same minute
+      if (lastNotifiedMinute.current === currentTime) return;
+
+      let notifiedInThisMinute = false;
+      prayerSettings.times.forEach(prayer => {
+        if (prayer.enabled && prayer.time === currentTime) {
+          notificationService.notify(
+            `Time for ${prayer.name}`,
+            `It's ${currentTime}. Time for your scheduled ${prayer.name}.`,
+            notificationService.hashCode(`prayer_${prayer.name}_${currentTime}`)
+          );
+          notifiedInThisMinute = true;
+        }
+      });
+
+      if (notifiedInThisMinute) {
+        lastNotifiedMinute.current = currentTime;
+      }
+    };
+
+    const interval = setInterval(checkPrayerTimes, 10000); // Check every 10 seconds for better accuracy
+    checkPrayerTimes(); // Initial check
+
+    return () => clearInterval(interval);
+  }, [prayerSettings, settings.notifications]);
 
   useEffect(() => {
     const isAnyModalOpen = isFullCalendarOpen || isModalOpen || isTrashOpen || !!detailModalData;
@@ -1459,12 +1799,14 @@ export default function App() {
     const cacheKey = `cached_sessions_${userId}`;
     const trashKey = `cached_trash_${userId}`;
     const routinesKey = `cached_routines_${userId}`;
+    const prayerKey = `cached_prayer_settings_${userId}`;
     
     const cachedSessions = localStorage.getItem(cacheKey);
     const cachedTrash = localStorage.getItem(trashKey);
     const cachedRoutines = localStorage.getItem(routinesKey);
     const cachedSettings = localStorage.getItem(`cached_settings_${userId}`);
     const cachedProfile = localStorage.getItem(`cached_profile_${userId}`);
+    const cachedPrayer = localStorage.getItem(prayerKey);
     
     try {
       if (cachedSessions) setSessions(JSON.parse(cachedSessions));
@@ -1472,6 +1814,7 @@ export default function App() {
       if (cachedRoutines) setRoutines(JSON.parse(cachedRoutines));
       if (cachedSettings) setSettings(JSON.parse(cachedSettings));
       if (cachedProfile) setProfile(JSON.parse(cachedProfile));
+      if (cachedPrayer) setPrayerSettings(JSON.parse(cachedPrayer));
     } catch (e) {
       console.warn('Error parsing cached data:', e);
     }
@@ -1484,12 +1827,13 @@ export default function App() {
         return;
       }
 
-      const [sessionsData, trashData, routinesData, settingsData, profileData] = await Promise.all([
+      const [sessionsData, trashData, routinesData, settingsData, profileData, prayerData] = await Promise.all([
         storage.getSessions(userId),
         storage.getTrash(userId),
         storage.getRoutines(userId),
         storage.getSettings(userId),
-        storage.getProfile(userId)
+        storage.getProfile(userId),
+        storage.getPrayerSettings(userId)
       ]);
       
       setSessions(sessionsData);
@@ -1497,6 +1841,7 @@ export default function App() {
       setRoutines(routinesData);
       setSettings(settingsData);
       setProfile(profileData);
+      setPrayerSettings(prayerData);
       console.log('[App] Background fetch complete');
     } catch (error) {
       console.warn('Background sync failed:', error);
@@ -1698,19 +2043,31 @@ export default function App() {
         const cachedProfile = localStorage.getItem(`cached_profile_${user.id}`);
         const cachedTimer = localStorage.getItem(`cached_timer_${user.id}`);
         const cachedRoutines = localStorage.getItem(`cached_routines_${user.id}`);
+        const cachedPrayerSettings = localStorage.getItem(`cached_prayer_settings_${user.id}`);
+        const cachedSchedules = localStorage.getItem(`cached_schedules_${user.id}`);
 
         if (cachedSessions) { setSessions(JSON.parse(cachedSessions)); hasAnyCache = true; }
         if (cachedTrash) setTrash(JSON.parse(cachedTrash));
         if (cachedSettings) setSettings(JSON.parse(cachedSettings));
         if (cachedProfile) setProfile(JSON.parse(cachedProfile));
         if (cachedRoutines) setRoutines(JSON.parse(cachedRoutines));
+        if (cachedPrayerSettings) setPrayerSettings(JSON.parse(cachedPrayerSettings));
+        if (cachedSchedules) setSchedules(JSON.parse(cachedSchedules));
         
         if (cachedTimer) {
           const timerData = JSON.parse(cachedTimer);
           setTimerTotalSeconds(timerData.total_seconds);
           setTimerInitialMinutes(Math.floor(timerData.total_seconds / 60));
-          setTimerTimeLeft(timerData.time_left);
-          setIsTimerActive(false);
+          
+          if (timerData.is_active && timerData.last_saved_at) {
+            const elapsed = Math.floor((Date.now() - timerData.last_saved_at) / 1000);
+            const newTimeLeft = Math.max(0, timerData.time_left - elapsed);
+            setTimerTimeLeft(newTimeLeft);
+            setIsTimerActive(newTimeLeft > 0);
+          } else {
+            setTimerTimeLeft(timerData.time_left);
+            setIsTimerActive(false);
+          }
         }
       } catch (e) {
         console.warn('Error loading initial cached data:', e);
@@ -1745,7 +2102,9 @@ export default function App() {
           storage.getSettings(user.id),
           storage.getProfile(user.id),
           storage.getTimer(user.id),
-          storage.getRoutines(user.id)
+          storage.getRoutines(user.id),
+          storage.getPrayerSettings(user.id),
+          storage.getSchedules(user.id)
         ]);
 
         // Race the data fetch against the timeout
@@ -1757,13 +2116,15 @@ export default function App() {
         // Clear the timeout if dataPromise wins
         if (timeoutId) clearTimeout(timeoutId);
 
-        const [sessionsData, trashData, settingsData, profileData, timerData, routinesData] = result as [StudySession[], StudySession[], AppSettings, UserProfile, TimerState | null, RoutineItem[]];
+        const [sessionsData, trashData, settingsData, profileData, timerData, routinesData, prayerData, schedulesData] = result as [StudySession[], StudySession[], AppSettings, UserProfile, TimerState | null, RoutineItem[], PrayerSettings, ScheduleItem[]];
 
         setSessions(sessionsData);
         setTrash(trashData);
         setSettings(settingsData);
         setProfile(profileData);
         setRoutines(routinesData);
+        setPrayerSettings(prayerData);
+        setSchedules(schedulesData);
 
         if (timerData) {
           setTimerTotalSeconds(timerData.total_seconds);
@@ -1850,20 +2211,20 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (user && user.id !== 'guest_user') {
-      notificationService.scheduleReminders(sessions, routines, settings);
+    if (user) {
+      notificationService.scheduleReminders(sessions, routines, settings, prayerSettings, schedules);
     }
 
     // Reschedule when app comes back to foreground to ensure accuracy
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && user && user.id !== 'guest_user') {
-        notificationService.scheduleReminders(sessions, routines, settings);
+      if (document.visibilityState === 'visible' && user) {
+        notificationService.scheduleReminders(sessions, routines, settings, prayerSettings, schedules);
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [sessions, routines, settings, user]);
+  }, [sessions, routines, settings, user, prayerSettings, schedules]);
 
   const handleReorder = async (newOrder: StudySession[], isCompleted: boolean) => {
     if (!user) return;
@@ -2294,16 +2655,13 @@ export default function App() {
                       </div>
                     </div>
                     <div className="flex gap-3">
-                      {user && !isRestored && (
-                        <button 
-                          onClick={handleManualSync}
-                          disabled={isSyncing}
-                          className="w-12 h-12 md:w-14 md:h-14 flex items-center justify-center bg-card rounded-2xl md:rounded-full border border-white/5 light:border-gray-200 text-primary hover:bg-white/10 light:hover:bg-gray-100 transition-all shadow-xl shadow-primary/5 active:scale-95"
-                          title="Restore Data"
-                        >
-                          <RefreshCw size={24} className={isSyncing ? "animate-spin" : ""} />
-                        </button>
-                      )}
+                      <button 
+                        onClick={() => setIsScheduleModalOpen(true)}
+                        className="w-12 h-12 md:w-14 md:h-14 flex items-center justify-center bg-card rounded-2xl md:rounded-full border border-white/5 light:border-gray-200 text-primary hover:bg-white/10 light:hover:bg-gray-100 transition-all shadow-xl shadow-primary/5 active:scale-95"
+                        title="Daily Schedule"
+                      >
+                        <Clock size={24} />
+                      </button>
                       <div className="relative">
                         <button 
                           onClick={() => setShowHomePrintOptions(!showHomePrintOptions)}
@@ -2678,6 +3036,7 @@ export default function App() {
                     }
                   }}
                   onSync={handleManualSync}
+                  onOpenPrayerTimes={() => setIsPrayerModalOpen(true)}
                   isSyncing={isSyncing}
                   isRestored={isRestored}
                   user={user}
@@ -2702,6 +3061,69 @@ export default function App() {
                   </div>
                 </header>
 
+
+                <Card className="p-6">
+                  <div className="flex items-center justify-between mb-8">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center">
+                        <Calendar size={20} className="text-indigo-500" />
+                      </div>
+                      <div>
+                        <h3 className="font-black text-foreground uppercase tracking-wider text-sm">3-Day Schedule</h3>
+                        <p className="text-xs text-gray-500 font-bold">Upcoming routines</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {[0, 1, 2].map((offset) => {
+                      const day = addDays(startOfDay(new Date()), offset);
+                      const dateStr = format(day, 'yyyy-MM-dd');
+                      const dayRoutines = routines.filter(r => {
+                        if (r.deleted_at) return false;
+                        const rStart = r.date.includes('T') ? format(new Date(r.date), 'yyyy-MM-dd') : r.date;
+                        if (!r.end_date) return rStart === dateStr;
+                        const rEnd = r.end_date.includes('T') ? format(new Date(r.end_date), 'yyyy-MM-dd') : r.end_date;
+                        return dateStr >= rStart && dateStr <= rEnd;
+                      });
+
+                      return (
+                        <div key={offset} className={cn(
+                          "flex flex-col gap-3 p-4 rounded-2xl border transition-all",
+                          settings.dark_mode 
+                            ? (offset === 0 ? "bg-indigo-500/5 border-indigo-500/20" : "bg-white/[0.02] border-white/5") 
+                            : (offset === 0 ? "bg-indigo-50 border-indigo-200" : "bg-gray-50 border-gray-100")
+                        )}>
+                          <div className="flex items-center justify-between mb-1">
+                            <p className={cn(
+                              "text-[10px] font-black uppercase tracking-[0.2em]",
+                              offset === 0 ? "text-indigo-500" : "text-gray-500"
+                            )}>
+                              {offset === 0 ? 'Today' : format(day, 'EEEE')}
+                            </p>
+                            <p className="text-[10px] font-bold text-gray-400">{format(day, 'MMM d')}</p>
+                          </div>
+
+                          <div className="space-y-3">
+                            {dayRoutines.length > 0 ? dayRoutines.map((r, rIdx) => (
+                              <div key={r.id + rIdx} className="group">
+                                <div className="flex items-center gap-2 mb-0.5">
+                                  <div className="w-1 h-1 rounded-full bg-indigo-500" />
+                                  <p className="text-xs font-black text-foreground line-clamp-1 tracking-tight">{r.subject}</p>
+                                </div>
+                                <p className="text-[10px] text-gray-500 font-bold ml-3 line-clamp-1 opacity-70">{r.chapter}</p>
+                              </div>
+                            )) : (
+                              <div className="py-2">
+                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest opacity-40">No routine</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Card>
 
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                   <Card className="lg:col-span-2 p-6 hover:bg-white/[0.02] light:hover:bg-gray-50 transition-colors cursor-pointer group" onClick={() => setDetailModalData({ type: 'trend', data: { title: 'Activity Trends' } })}>
@@ -3421,6 +3843,35 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
+      <ScheduleModal 
+        isOpen={isScheduleModalOpen}
+        onClose={() => setIsScheduleModalOpen(false)}
+        schedules={schedules}
+        onSave={(item) => {
+          const newSchedules = [...schedules, item].sort((a, b) => a.start_time.localeCompare(b.start_time));
+          setSchedules(newSchedules);
+          storage.saveSchedule(user?.id || 'guest_user', item);
+        }}
+        onDelete={(id) => {
+          const newSchedules = schedules.filter(s => s.id !== id);
+          setSchedules(newSchedules);
+          storage.deleteSchedule(user?.id || 'guest_user', id);
+        }}
+        darkMode={settings.dark_mode}
+      />
+      <PrayerModal 
+        isOpen={isPrayerModalOpen}
+        onClose={() => setIsPrayerModalOpen(false)}
+        settings={prayerSettings}
+        onSave={async (newSettings: PrayerSettings) => {
+          setPrayerSettings(newSettings);
+          setIsPrayerModalOpen(false);
+          if (user) {
+            await storage.savePrayerSettings(user.id, newSettings);
+          }
+        }}
+        darkMode={settings.dark_mode}
+      />
     </div>
   );
 }
@@ -3428,6 +3879,214 @@ export default function App() {
 // --- Sub-components ---
 
 // --- Sub-components ---
+
+interface ScheduleModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  schedules: ScheduleItem[];
+  onSave: (schedule: ScheduleItem) => void;
+  onDelete: (id: string) => void;
+  darkMode: boolean;
+}
+
+function ScheduleModal({ isOpen, onClose, schedules, onSave, onDelete, darkMode }: ScheduleModalProps) {
+  const [startTime, setStartTime] = useState('08:00');
+  const [endTime, setEndTime] = useState('09:00');
+  const [task, setTask] = useState('');
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  const formatTo12h = (time: string) => {
+    if (!time) return '';
+    const [hours, minutes] = time.split(':');
+    const h = parseInt(hours);
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const h12 = h % 12 || 12;
+    return `${h12}:${minutes} ${ampm}`;
+  };
+
+  const handleSubmit = () => {
+    if (!task) return;
+    const schedule: ScheduleItem = {
+      id: editingId || Math.random().toString(36).substr(2, 9),
+      user_id: '', // Will be set by storage.saveSchedule
+      start_time: startTime,
+      end_time: endTime,
+      task,
+      created_at: new Date().toISOString()
+    };
+    onSave(schedule);
+    setTask('');
+    setEditingId(null);
+    setShowAddForm(false);
+  };
+
+  const handleEdit = (item: ScheduleItem) => {
+    setStartTime(item.start_time);
+    setEndTime(item.end_time);
+    setTask(item.task);
+    setEditingId(item.id);
+    setShowAddForm(true);
+  };
+
+  const handleToggleForm = () => {
+    if (showAddForm && editingId) {
+      setEditingId(null);
+      setTask('');
+    }
+    setShowAddForm(!showAddForm);
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-end md:items-center justify-center p-0 md:p-4 bg-black/60 backdrop-blur-sm">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.9, y: 20 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.9, y: 20 }}
+        className={cn(
+          "w-full max-w-lg rounded-t-[2.5rem] md:rounded-[2.5rem] overflow-hidden shadow-2xl flex flex-col max-h-[95vh] md:max-h-[90vh]",
+          darkMode ? "bg-slate-900 border-t md:border border-white/10" : "bg-white border-t md:border border-gray-200"
+        )}
+      >
+        <div className="p-6 md:p-8 flex flex-col h-full overflow-hidden">
+          <div className="flex items-center justify-between mb-6 md:mb-8 shrink-0">
+            <div className="flex items-center gap-4">
+              <div>
+                <h2 className={cn("text-2xl font-black tracking-tight", darkMode ? "text-white" : "text-gray-900")}>Daily Schedule</h2>
+                <p className="text-xs font-bold text-gray-500 uppercase tracking-widest mt-1">Time Blocking</p>
+              </div>
+              <button 
+                onClick={handleToggleForm}
+                className={cn(
+                  "w-10 h-10 rounded-xl flex items-center justify-center transition-all active:scale-95",
+                  showAddForm ? "bg-primary text-white" : "bg-primary/10 text-primary hover:bg-primary/20"
+                )}
+                title={editingId ? "Cancel Edit" : "Add to Schedule"}
+              >
+                {editingId ? <X size={24} strokeWidth={2.5} /> : <PlusCircle size={24} strokeWidth={2.5} />}
+              </button>
+            </div>
+            <button onClick={onClose} className="p-2 hover:bg-white/5 rounded-xl transition-colors text-gray-400">
+              <X size={24} />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto pr-1 md:pr-2 space-y-6 scrollbar-hide pb-8">
+            <AnimatePresence>
+              {showAddForm && (
+                <motion.div 
+                  initial={{ height: 0, opacity: 0, marginBottom: 0 }}
+                  animate={{ height: 'auto', opacity: 1, marginBottom: 12 }}
+                  exit={{ height: 0, opacity: 0, marginBottom: 0 }}
+                  className="overflow-hidden"
+                >
+                  <div className={cn(
+                    "p-5 md:p-6 rounded-3xl space-y-4",
+                    darkMode ? "bg-white/5 border border-white/5" : "bg-gray-50 border border-gray-200"
+                  )}>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest ml-1">Start Time</label>
+                        <input 
+                          type="time" 
+                          value={startTime}
+                          onChange={(e) => setStartTime(e.target.value)}
+                          className={cn(
+                            "w-full p-5 rounded-2xl outline-none border transition-all font-bold",
+                            darkMode ? "bg-slate-800 border-white/5 text-white focus:border-primary/50" : "bg-white border-gray-200 text-gray-900 focus:border-primary/50"
+                          )}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest ml-1">End Time</label>
+                        <input 
+                          type="time" 
+                          value={endTime}
+                          onChange={(e) => setEndTime(e.target.value)}
+                          className={cn(
+                            "w-full p-5 rounded-2xl outline-none border transition-all font-bold",
+                            darkMode ? "bg-slate-800 border-white/5 text-white focus:border-primary/50" : "bg-white border-gray-200 text-gray-900 focus:border-primary/50"
+                          )}
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest ml-1">What will you do?</label>
+                      <textarea 
+                        value={task}
+                        onChange={(e) => setTask(e.target.value)}
+                        placeholder="e.g. Morning Study Session"
+                        className={cn(
+                          "w-full p-4 rounded-2xl outline-none border transition-all font-bold min-h-[100px] resize-none",
+                          darkMode ? "bg-slate-800 border-white/5 text-white focus:border-primary/50" : "bg-white border-gray-200 text-gray-900 focus:border-primary/50"
+                        )}
+                      />
+                    </div>
+                    <button 
+                      onClick={handleSubmit}
+                      className="w-full py-4 bg-primary text-white rounded-2xl font-black text-sm tracking-widest hover:opacity-90 transition-all shadow-lg shadow-primary/20 active:scale-95 flex items-center justify-center gap-2"
+                    >
+                      {editingId ? <RefreshCw size={18} strokeWidth={3} /> : <Plus size={18} strokeWidth={3} />}
+                      {editingId ? 'UPDATE SCHEDULE' : 'ADD TO SCHEDULE'}
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <div className="space-y-3">
+              {schedules.length > 0 ? (
+                schedules.map((item) => (
+                  <div 
+                    key={item.id}
+                    className={cn(
+                      "p-4 rounded-2xl flex items-center justify-between group transition-all",
+                      darkMode ? "bg-white/5 hover:bg-white/10" : "bg-gray-50 hover:bg-gray-100"
+                    )}
+                  >
+                    <div className="flex items-center gap-4 min-w-0 flex-1">
+                      <div className="w-20 h-20 rounded-2xl bg-primary/10 flex flex-col items-center justify-center text-primary shrink-0">
+                        <span className="text-[11px] font-black leading-none">{formatTo12h(item.start_time)}</span>
+                        <div className="w-6 h-[1px] bg-primary/30 my-2" />
+                        <span className="text-[11px] font-black leading-none">{formatTo12h(item.end_time)}</span>
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className={cn("font-bold text-sm break-words", darkMode ? "text-white" : "text-gray-900")}>{item.task}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0 ml-2">
+                      <button 
+                        onClick={() => handleEdit(item)}
+                        className="p-2 text-gray-500 hover:text-primary transition-colors"
+                        title="Edit"
+                      >
+                        <Edit size={18} />
+                      </button>
+                      <button 
+                        onClick={() => onDelete(item.id)}
+                        className="p-2 text-gray-500 hover:text-red-500 transition-colors"
+                        title="Delete"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="flex flex-col items-center justify-center py-12 opacity-30">
+                  <Clock size={48} className="mb-4" />
+                  <p className="text-sm font-bold text-center">No schedule items yet</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
 
 interface FullCalendarModalProps {
   isOpen: boolean;

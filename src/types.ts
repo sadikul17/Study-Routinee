@@ -84,11 +84,33 @@ export interface RoutineItem {
   chapter: string;
   topics?: string;
   date: string; // YYYY-MM-DD (Start Date)
-  end_date?: string; // YYYY-MM-DD
+  end_date?: string | null; // YYYY-MM-DD
   created_at: string;
   countdown: number;
-  deleted_at?: string; // ISO string
-  reminder_time?: string; // HH:mm
+  deleted_at?: string | null; // ISO string
+  reminder_time?: string | null; // HH:mm
+}
+
+export interface PrayerTime {
+  name: string;
+  time: string; // HH:mm
+  enabled: boolean;
+  isManual?: boolean;
+}
+
+export interface PrayerSettings {
+  times: PrayerTime[];
+  location: string;
+  last_updated?: string;
+}
+
+export interface ScheduleItem {
+  id: string;
+  user_id: string;
+  start_time: string; // HH:mm
+  end_time: string; // HH:mm
+  task: string;
+  created_at: string;
 }
 
 export const storage = {
@@ -523,6 +545,168 @@ export const storage = {
       }
     }
   },
+  getPrayerSettings: async (userId: string): Promise<PrayerSettings> => {
+    try {
+      const { data, error } = await supabase
+        .from('settings')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('type', 'prayer')
+        .single();
+      
+      if (error && error.code !== 'PGRST116') throw error;
+      
+      if (data) {
+        localStorage.setItem(`cached_prayer_settings_${userId}`, JSON.stringify(data.settings));
+        return data.settings as PrayerSettings;
+      }
+      
+      const defaultSettings: PrayerSettings = {
+        times: [
+          { name: 'Fajr', time: '04:30', enabled: true },
+          { name: 'Dhuhr', time: '12:15', enabled: true },
+          { name: 'Asr', time: '16:30', enabled: true },
+          { name: 'Maghrib', time: '18:15', enabled: true },
+          { name: 'Isha', time: '19:45', enabled: true },
+          { name: 'Tahajjud', time: '03:00', enabled: true },
+          { name: 'Gym', time: '07:00', enabled: true },
+        ],
+        location: 'Sherpur, Bogura'
+      };
+      return defaultSettings;
+    } catch (error) {
+      console.warn('Offline mode or query error in getPrayerSettings:', error);
+      const cached = localStorage.getItem(`cached_prayer_settings_${userId}`);
+      return cached ? JSON.parse(cached) : {
+        times: [
+          { name: 'Fajr', time: '04:30', enabled: true },
+          { name: 'Dhuhr', time: '12:15', enabled: true },
+          { name: 'Asr', time: '16:30', enabled: true },
+          { name: 'Maghrib', time: '18:15', enabled: true },
+          { name: 'Isha', time: '19:45', enabled: true },
+          { name: 'Tahajjud', time: '03:00', enabled: true },
+          { name: 'Gym', time: '07:00', enabled: true },
+        ],
+        location: 'Sherpur, Bogura'
+      };
+    }
+  },
+  savePrayerSettings: async (userId: string, settings: PrayerSettings) => {
+    localStorage.setItem(`cached_prayer_settings_${userId}`, JSON.stringify(settings));
+    
+    const pendingKey = `pending_sync_${userId}`;
+    const pending = safeParse(localStorage.getItem(pendingKey), []);
+    const existingIndex = pending.findIndex((p: any) => p.type === 'save_prayer_settings');
+    let newPending;
+    if (existingIndex !== -1) {
+      newPending = [...pending];
+      newPending[existingIndex] = { type: 'save_prayer_settings', data: settings };
+    } else {
+      newPending = [...pending, { type: 'save_prayer_settings', data: settings }];
+    }
+    localStorage.setItem(pendingKey, JSON.stringify(newPending));
+
+    if (!userId || userId === 'guest_user') return;
+
+    try {
+      const { error } = await supabase
+        .from('settings')
+        .upsert({ user_id: userId, type: 'prayer', settings: settings }, { onConflict: 'user_id,type' });
+      
+      if (error) throw error;
+      
+      const updatedPending = JSON.parse(localStorage.getItem(pendingKey) || '[]').filter((p: any) => p.type !== 'save_prayer_settings');
+      localStorage.setItem(pendingKey, JSON.stringify(updatedPending));
+    } catch (err: any) {
+      console.error('Error saving prayer settings:', err);
+    }
+  },
+  getSchedules: async (userId: string): Promise<ScheduleItem[]> => {
+    try {
+      const { data, error } = await supabase
+        .from('settings')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('type', 'schedules')
+        .single();
+      
+      if (error && error.code !== 'PGRST116') throw error;
+      
+      const schedules = data ? (data.settings as ScheduleItem[]) : [];
+      localStorage.setItem(`cached_schedules_${userId}`, JSON.stringify(schedules));
+      return schedules;
+    } catch (error) {
+      console.warn('Offline mode or query error (Schedules):', error);
+      const cached = localStorage.getItem(`cached_schedules_${userId}`);
+      return safeParse(cached, []);
+    }
+  },
+  saveSchedule: async (userId: string, schedule: ScheduleItem) => {
+    const cacheKey = `cached_schedules_${userId}`;
+    const cached = safeParse(localStorage.getItem(cacheKey), []);
+    const newSchedules = [...cached.filter((s: any) => s.id !== schedule.id), schedule];
+    localStorage.setItem(cacheKey, JSON.stringify(newSchedules));
+    
+    const pendingKey = `pending_sync_${userId}`;
+    const pending = safeParse(localStorage.getItem(pendingKey), []);
+    const existingIndex = pending.findIndex((p: any) => p.type === 'save_schedules');
+    let newPending;
+    if (existingIndex !== -1) {
+      newPending = [...pending];
+      newPending[existingIndex] = { type: 'save_schedules', data: newSchedules };
+    } else {
+      newPending = [...pending, { type: 'save_schedules', data: newSchedules }];
+    }
+    localStorage.setItem(pendingKey, JSON.stringify(newPending));
+
+    if (!userId || userId === 'guest_user') return;
+
+    try {
+      const { error } = await supabase
+        .from('settings')
+        .upsert({ user_id: userId, type: 'schedules', settings: newSchedules }, { onConflict: 'user_id,type' });
+      
+      if (error) throw error;
+      
+      const updatedPending = JSON.parse(localStorage.getItem(pendingKey) || '[]').filter((p: any) => p.type !== 'save_schedules');
+      localStorage.setItem(pendingKey, JSON.stringify(updatedPending));
+    } catch (err) {
+      console.error('Error saving schedules to Supabase:', err);
+    }
+  },
+  deleteSchedule: async (userId: string, id: string) => {
+    const cacheKey = `cached_schedules_${userId}`;
+    const cached = safeParse(localStorage.getItem(cacheKey), []);
+    const newSchedules = cached.filter((s: any) => s.id !== id);
+    localStorage.setItem(cacheKey, JSON.stringify(newSchedules));
+
+    const pendingKey = `pending_sync_${userId}`;
+    const pending = safeParse(localStorage.getItem(pendingKey), []);
+    const existingIndex = pending.findIndex((p: any) => p.type === 'save_schedules');
+    let newPending;
+    if (existingIndex !== -1) {
+      newPending = [...pending];
+      newPending[existingIndex] = { type: 'save_schedules', data: newSchedules };
+    } else {
+      newPending = [...pending, { type: 'save_schedules', data: newSchedules }];
+    }
+    localStorage.setItem(pendingKey, JSON.stringify(newPending));
+
+    if (!userId || userId === 'guest_user') return;
+
+    try {
+      const { error } = await supabase
+        .from('settings')
+        .upsert({ user_id: userId, type: 'schedules', settings: newSchedules }, { onConflict: 'user_id,type' });
+      
+      if (error) throw error;
+      
+      const updatedPending = JSON.parse(localStorage.getItem(pendingKey) || '[]').filter((p: any) => p.type !== 'save_schedules');
+      localStorage.setItem(pendingKey, JSON.stringify(updatedPending));
+    } catch (err) {
+      console.error('Error deleting schedule from Supabase:', err);
+    }
+  },
   getTimer: async (userId: string): Promise<TimerState | null> => {
     try {
       const { data, error } = await supabase
@@ -710,6 +894,10 @@ export const storage = {
           ({ error } = await supabase.from('settings').upsert({ user_id: userId, type: 'app', settings: change.data }, { onConflict: 'user_id,type' }));
         } else if (change.type === 'save_timer') {
           ({ error } = await supabase.from('settings').upsert({ user_id: userId, type: 'timer', settings: change.data }, { onConflict: 'user_id,type' }));
+        } else if (change.type === 'save_prayer_settings') {
+          ({ error } = await supabase.from('settings').upsert({ user_id: userId, type: 'prayer', settings: change.data }, { onConflict: 'user_id,type' }));
+        } else if (change.type === 'save_schedules') {
+          ({ error } = await supabase.from('settings').upsert({ user_id: userId, type: 'schedules', settings: change.data }, { onConflict: 'user_id,type' }));
         } else if (change.type === 'save_profile') {
           ({ error } = await supabase.from('profiles').upsert({ ...change.data, user_id: userId }, { onConflict: 'user_id' }));
         }
@@ -752,12 +940,14 @@ export const storage = {
       const guestSettingsKey = `cached_settings_${guestUserId}`;
       const guestProfileKey = `cached_profile_${guestUserId}`;
       const guestRoutinesKey = `cached_routines_${guestUserId}`;
+      const guestSchedulesKey = `cached_schedules_${guestUserId}`;
 
       const guestSessions = safeParse(localStorage.getItem(guestSessionsKey), []);
       const guestTrash = safeParse(localStorage.getItem(guestTrashKey), []);
       const guestSettings = safeParse(localStorage.getItem(guestSettingsKey), null);
       const guestProfile = safeParse(localStorage.getItem(guestProfileKey), null);
       const guestRoutines = safeParse(localStorage.getItem(guestRoutinesKey), []);
+      const guestSchedules = safeParse(localStorage.getItem(guestSchedulesKey), []);
 
       // 2. Sync sessions
       if (guestSessions.length > 0 || guestTrash.length > 0) {
@@ -790,6 +980,11 @@ export const storage = {
         await supabase.from('profiles').upsert({ ...guestProfile, user_id: newUserId }, { onConflict: 'user_id' });
       }
 
+      // 6. Sync schedules
+      if (guestSchedules.length > 0) {
+        await supabase.from('settings').upsert({ user_id: newUserId, type: 'schedules', settings: guestSchedules }, { onConflict: 'user_id,type' });
+      }
+
       // 6. Clear guest data
       localStorage.removeItem(guestSessionsKey);
       localStorage.removeItem(guestTrashKey);
@@ -814,13 +1009,14 @@ export const storage = {
       await storage.syncOfflineData(userId);
 
       // 2. Fetch latest data from Supabase to ensure we have everything
-      const [sessionsData, trashData, routinesData, settingsData, profileData, timerData] = await Promise.all([
+      const [sessionsData, trashData, routinesData, settingsData, profileData, timerData, schedulesData] = await Promise.all([
         storage.getSessions(userId),
         storage.getTrash(userId),
         storage.getRoutines(userId),
         storage.getSettings(userId),
         storage.getProfile(userId),
-        storage.getTimer(userId)
+        storage.getTimer(userId),
+        storage.getSchedules(userId)
       ]);
 
       // 3. Get all local data
@@ -830,6 +1026,7 @@ export const storage = {
       const localSettings = safeParse(localStorage.getItem(`cached_settings_${userId}`), null);
       const localProfile = safeParse(localStorage.getItem(`cached_profile_${userId}`), null);
       const localTimer = safeParse(localStorage.getItem(`cached_timer_${userId}`), null);
+      const localSchedules = safeParse(localStorage.getItem(`cached_schedules_${userId}`), []);
 
       // 4. Merge and Push to Supabase (if local has something new)
       // This is a safety measure to ensure local data is also pushed
@@ -849,6 +1046,9 @@ export const storage = {
       }
       if (localTimer) {
         await supabase.from('settings').upsert({ user_id: userId, type: 'timer', settings: localTimer }, { onConflict: 'user_id,type' });
+      }
+      if (localSchedules.length > 0) {
+        await supabase.from('settings').upsert({ user_id: userId, type: 'schedules', settings: localSchedules }, { onConflict: 'user_id,type' });
       }
       
       console.log('[Storage] Full sync complete');
@@ -883,26 +1083,30 @@ export const storage = {
       ? crypto.randomUUID() 
       : Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15));
     
+    // 1. Get existing routine from cache for merging
+    const cacheKey = `cached_routines_${userId}`;
+    const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+    const existing = cached.find((r: any) => r.id === routineId);
+
     const fullRoutine: RoutineItem = {
       id: routineId,
       user_id: userId,
-      subject: routine.subject || '',
-      chapter: routine.chapter || '',
-      topics: routine.topics || '',
-      date: routine.date || format(new Date(), 'yyyy-MM-dd'),
-      end_date: routine.end_date,
-      created_at: routine.created_at || new Date().toISOString(),
-      countdown: routine.countdown || 0
+      subject: routine.subject ?? existing?.subject ?? '',
+      chapter: routine.chapter ?? existing?.chapter ?? '',
+      topics: routine.topics ?? existing?.topics ?? '',
+      date: routine.date ?? existing?.date ?? format(new Date(), 'yyyy-MM-dd'),
+      end_date: routine.end_date !== undefined ? routine.end_date : (existing?.end_date ?? null),
+      reminder_time: routine.reminder_time !== undefined ? routine.reminder_time : (existing?.reminder_time ?? null),
+      created_at: routine.created_at ?? existing?.created_at ?? new Date().toISOString(),
+      countdown: routine.countdown ?? existing?.countdown ?? 0,
+      deleted_at: routine.deleted_at ?? existing?.deleted_at ?? null
     };
 
-    // 1. Update local cache immediately
-    const cacheKey = `cached_routines_${userId}`;
-    const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
-    
+    // 2. Update local cache immediately
     let newCache = [...cached.filter((r: any) => r.id !== routineId), fullRoutine];
     localStorage.setItem(cacheKey, JSON.stringify(newCache));
 
-    // 2. Add to pending sync
+    // 3. Add to pending sync
     const pendingKey = `pending_sync_${userId}`;
     const pending = JSON.parse(localStorage.getItem(pendingKey) || '[]');
     
@@ -917,7 +1121,7 @@ export const storage = {
     localStorage.setItem(pendingKey, JSON.stringify(newPending));
 
     try {
-      // 3. Save to Supabase in real-time
+      // 4. Save to Supabase in real-time
       const { error } = await supabase
         .from('routines')
         .upsert(fullRoutine);
