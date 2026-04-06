@@ -261,7 +261,12 @@ const RoutineCard = ({
             </button>
             {view === 'active' && (
               <button
-                onClick={() => onAddTask(routine.subject, routine.chapter, routine.topics || '', routine.date, routine.end_date, routine.reminder_time)}
+                onClick={() => {
+                  const rId = routine.id;
+                  if (rId) {
+                    onAddTask(routine.subject, routine.chapter, routine.topics || '', routine.date, routine.end_date, routine.reminder_time, rId);
+                  }
+                }}
                 className={cn(
                   "p-3 rounded-2xl transition-all border active:scale-95 flex items-center justify-center",
                   darkMode 
@@ -583,7 +588,7 @@ const RoutinePage = ({
   onDeleteRoutine: (id: string) => Promise<void>,
   onRestoreRoutine: (id: string) => Promise<void>,
   onPermanentlyDeleteRoutine: (id: string) => Promise<void>,
-  onAddTask: (subject: string, chapter: string, topics: string, date: string, end_date?: string, reminder_time?: string) => Promise<void>,
+  onAddTask: (subject: string, chapter: string, topics: string, date: string, end_date?: string, reminder_time?: string, routine_id?: string) => Promise<void>,
   onSync: () => Promise<void>,
   onOpenPrayerTimes: () => void,
   isSyncing: boolean,
@@ -2242,13 +2247,43 @@ export default function App() {
     
     try {
       if (editingSessionId) {
-        const existingSession = sessions.find(s => s.id === editingSessionId);
+        const currentSessions = await storage.getSessions(user.id);
+        const existingSession = currentSessions.find(s => s.id === editingSessionId);
         if (existingSession) {
           const updatedSession: StudySession = {
             ...existingSession,
             ...newSession,
           };
           await storage.saveSession(user.id, updatedSession);
+
+          // Sync back to routine if linked
+          if (updatedSession.routine_id) {
+            const currentRoutines = await storage.getRoutines(user.id);
+            const routine = currentRoutines.find(r => r.id === updatedSession.routine_id);
+            if (routine) {
+              const updatedRoutine: Partial<RoutineItem> = {
+                id: routine.id,
+                subject: updatedSession.subject,
+                chapter: updatedSession.chapter,
+                topics: updatedSession.topics,
+                reminder_time: updatedSession.reminder_time
+              };
+              await storage.saveRoutine(user.id, updatedRoutine);
+              
+              // Also update OTHER sessions linked to this routine to keep them in sync
+              const otherLinkedSessions = currentSessions.filter(s => s.routine_id === routine.id && s.id !== editingSessionId);
+              if (otherLinkedSessions.length > 0) {
+                const updatedOtherSessions = otherLinkedSessions.map(s => ({
+                  ...s,
+                  subject: updatedSession.subject,
+                  chapter: updatedSession.chapter,
+                  topics: updatedSession.topics,
+                  reminder_time: updatedSession.reminder_time
+                }));
+                await storage.saveSessions(user.id, updatedOtherSessions);
+              }
+            }
+          }
         }
       } else {
         const sessionId = typeof crypto !== 'undefined' && crypto.randomUUID 
@@ -2977,6 +3012,23 @@ export default function App() {
                   onSaveRoutine={async (routine) => {
                     if (user) {
                       await storage.saveRoutine(user.id, routine);
+                      
+                      // Sync with linked sessions if this is an update
+                      if (routine.id) {
+                        const currentSessions = await storage.getSessions(user.id);
+                        const linkedSessions = currentSessions.filter(s => s.routine_id === routine.id);
+                        if (linkedSessions.length > 0) {
+                          const updatedSessions = linkedSessions.map(s => ({
+                            ...s,
+                            subject: routine.subject || s.subject,
+                            chapter: routine.chapter || s.chapter,
+                            topics: routine.topics || s.topics,
+                            reminder_time: routine.reminder_time || s.reminder_time
+                          }));
+                          await storage.saveSessions(user.id, updatedSessions);
+                        }
+                      }
+                      
                       await refreshData(user.id);
                     }
                   }}
@@ -2998,7 +3050,7 @@ export default function App() {
                       await refreshData(user.id);
                     }
                   }}
-                  onAddTask={async (subject, chapter, topics, date, end_date, reminder_time) => {
+                  onAddTask={async (subject, chapter, topics, date, end_date, reminder_time, routine_id) => {
                     if (user) {
                       const start = startOfDay(new Date(date));
                       const end = end_date ? startOfDay(new Date(end_date)) : start;
@@ -3025,12 +3077,13 @@ export default function App() {
                           icon: 'Book',
                           date: dateStr,
                           completed: false,
-                          reminder_time
+                          reminder_time,
+                          routine_id
                         };
                         sessionsToSave.push(session);
                       }
                       
-                      await Promise.all(sessionsToSave.map(s => storage.saveSession(user.id, s)));
+                      await storage.saveSessions(user.id, sessionsToSave);
                       await refreshData(user.id);
                       setActiveTab('home');
                     }

@@ -20,6 +20,27 @@ export const safeParse = (json: string | null, fallback: any) => {
   }
 };
 
+// Helper to persist routine_id mapping locally
+const getRoutineIdMap = (userId: string): Record<string, string> => {
+  return safeParse(localStorage.getItem(`session_routine_map_${userId}`), {});
+};
+
+const saveRoutineIdToMap = (userId: string, sessionId: string, routineId: string) => {
+  const map = getRoutineIdMap(userId);
+  map[sessionId] = routineId;
+  localStorage.setItem(`session_routine_map_${userId}`, JSON.stringify(map));
+};
+
+const saveRoutineIdsToMap = (userId: string, sessions: StudySession[]) => {
+  const map = getRoutineIdMap(userId);
+  sessions.forEach(s => {
+    if (s.routine_id) {
+      map[s.id] = s.routine_id;
+    }
+  });
+  localStorage.setItem(`session_routine_map_${userId}`, JSON.stringify(map));
+};
+
 export const isNetworkError = (error: any): boolean => {
   if (!error) return false;
   const message = error.message || String(error);
@@ -40,6 +61,7 @@ export interface StudySession {
   completed: boolean;
   deleted_at?: string; // ISO string
   reminder_time?: string; // HH:mm
+  routine_id?: string; // Link to RoutineItem
 }
 
 export interface TimerState {
@@ -126,7 +148,11 @@ export const storage = {
       
       if (error) throw error;
       
-      const sessions = data as StudySession[];
+      const routineIdMap = getRoutineIdMap(userId);
+      const sessions = (data as StudySession[]).map(s => ({
+        ...s,
+        routine_id: s.routine_id || routineIdMap[s.id]
+      }));
       
       // 2. Cache all sessions locally for offline access
       localStorage.setItem(`cached_sessions_${userId}`, JSON.stringify(sessions));
@@ -146,6 +172,11 @@ export const storage = {
     
     let newCache = [...cached.filter((s: any) => s.id !== session.id), session];
     localStorage.setItem(cacheKey, JSON.stringify(newCache));
+
+    // Save routine_id mapping locally
+    if (session.routine_id) {
+      saveRoutineIdToMap(userId, session.id, session.routine_id);
+    }
     
     // 2. Add to pending sync
     const pendingKey = `pending_sync_${userId}`;
@@ -170,9 +201,11 @@ export const storage = {
 
     try {
       // 3. Save to Supabase in real-time
+      // Omit routine_id from Supabase call to be safe if column doesn't exist
+      const { routine_id, ...sessionToSupabase } = session as any;
       const { error } = await supabase
         .from('sessions')
-        .upsert({ ...session, user_id: userId });
+        .upsert({ ...sessionToSupabase, user_id: userId });
       
       if (error) throw error;
       
@@ -198,6 +231,9 @@ export const storage = {
     ];
     localStorage.setItem(cacheKey, JSON.stringify(newCache));
 
+    // Save routine_id mappings locally
+    saveRoutineIdsToMap(userId, sessions);
+
     // 2. Add to pending sync for all sessions
     const pendingKey = `pending_sync_${userId}`;
     const pending = JSON.parse(localStorage.getItem(pendingKey) || '[]');
@@ -214,9 +250,14 @@ export const storage = {
 
     try {
       // 3. Save to Supabase in real-time
+      // Omit routine_id from Supabase call to be safe
+      const sessionsToSupabase = sessions.map(s => {
+        const { routine_id, ...rest } = s as any;
+        return { ...rest, user_id: userId };
+      });
       const { error } = await supabase
         .from('sessions')
-        .upsert(sessions.map(s => ({ ...s, user_id: userId })));
+        .upsert(sessionsToSupabase);
       
       if (error) throw error;
 
@@ -873,7 +914,8 @@ export const storage = {
       try {
         let error;
         if (change.type === 'save') {
-          ({ error } = await supabase.from('sessions').upsert({ ...change.data, user_id: userId }));
+          const { routine_id, ...supabaseData } = change.data as any;
+          ({ error } = await supabase.from('sessions').upsert({ ...supabaseData, user_id: userId }));
         } else if (change.type === 'toggle') {
           ({ error } = await supabase.from('sessions').update({ completed: change.completed }).eq('id', change.id).eq('user_id', userId));
         } else if (change.type === 'delete') {
@@ -951,10 +993,13 @@ export const storage = {
 
       // 2. Sync sessions
       if (guestSessions.length > 0 || guestTrash.length > 0) {
-        const allSessions = [...guestSessions, ...guestTrash].map(s => ({
-          ...s,
-          user_id: newUserId
-        }));
+        const allSessions = [...guestSessions, ...guestTrash].map(s => {
+          const { routine_id, ...rest } = s as any;
+          return {
+            ...rest,
+            user_id: newUserId
+          };
+        });
         
         const { error } = await supabase.from('sessions').upsert(allSessions);
         if (error) console.error('Error syncing guest sessions:', error);
@@ -1031,7 +1076,10 @@ export const storage = {
       // 4. Merge and Push to Supabase (if local has something new)
       // This is a safety measure to ensure local data is also pushed
       if (localSessions.length > 0 || localTrash.length > 0) {
-        const allSessions = [...localSessions, ...localTrash].map(s => ({ ...s, user_id: userId }));
+        const allSessions = [...localSessions, ...localTrash].map(s => {
+          const { routine_id, ...rest } = s as any;
+          return { ...rest, user_id: userId };
+        });
         await supabase.from('sessions').upsert(allSessions);
       }
       if (localRoutines.length > 0) {
