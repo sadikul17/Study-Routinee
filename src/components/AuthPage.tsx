@@ -166,7 +166,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         }
         // For Android/iOS apps, we need to ensure the redirect URL is correct
         // Capacitor apps on Android usually use http://localhost
-        const redirectTo = Capacitor.isNativePlatform() ? 'http://localhost' : window.location.href.split('?')[0].split('#')[0];
+        const redirectTo = Capacitor.isNativePlatform() ? 'http://localhost' : window.location.origin;
         const { error } = await supabase.auth.signUp({ 
           email: email.trim().toLowerCase(), 
           password,

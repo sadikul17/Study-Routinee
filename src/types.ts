@@ -20,27 +20,6 @@ export const safeParse = (json: string | null, fallback: any) => {
   }
 };
 
-// Helper to persist routine_id mapping locally
-const getRoutineIdMap = (userId: string): Record<string, string> => {
-  return safeParse(localStorage.getItem(`session_routine_map_${userId}`), {});
-};
-
-const saveRoutineIdToMap = (userId: string, sessionId: string, routineId: string) => {
-  const map = getRoutineIdMap(userId);
-  map[sessionId] = routineId;
-  localStorage.setItem(`session_routine_map_${userId}`, JSON.stringify(map));
-};
-
-const saveRoutineIdsToMap = (userId: string, sessions: StudySession[]) => {
-  const map = getRoutineIdMap(userId);
-  sessions.forEach(s => {
-    if (s.routine_id) {
-      map[s.id] = s.routine_id;
-    }
-  });
-  localStorage.setItem(`session_routine_map_${userId}`, JSON.stringify(map));
-};
-
 export const isNetworkError = (error: any): boolean => {
   if (!error) return false;
   const message = error.message || String(error);
@@ -60,8 +39,8 @@ export interface StudySession {
   date: string; // ISO string or YYYY-MM-DD
   completed: boolean;
   deleted_at?: string; // ISO string
-  reminder_time?: string; // HH:mm
-  routine_id?: string; // Link to RoutineItem
+  reminder_time?: string | null; // HH:mm
+  routine_id?: string;
 }
 
 export interface TimerState {
@@ -69,6 +48,18 @@ export interface TimerState {
   time_left: number;
   is_active: boolean;
   last_saved_at: number;
+}
+
+export interface StudyTimerState {
+  seconds: number;
+  is_running: boolean;
+  last_started_at: number | null;
+  last_saved_at: number | null;
+  last_updated_at: string; // YYYY-MM-DD
+}
+
+export interface StudyHistory {
+  [date: string]: number; // date -> seconds
 }
 
 export interface AppSettings {
@@ -107,6 +98,7 @@ export interface RoutineItem {
   topics?: string;
   date: string; // YYYY-MM-DD (Start Date)
   end_date?: string | null; // YYYY-MM-DD
+  specific_dates?: string[] | null; // YYYY-MM-DD array
   created_at: string;
   countdown: number;
   deleted_at?: string | null; // ISO string
@@ -148,11 +140,7 @@ export const storage = {
       
       if (error) throw error;
       
-      const routineIdMap = getRoutineIdMap(userId);
-      const sessions = (data as StudySession[]).map(s => ({
-        ...s,
-        routine_id: s.routine_id || routineIdMap[s.id]
-      }));
+      const sessions = data as StudySession[];
       
       // 2. Cache all sessions locally for offline access
       localStorage.setItem(`cached_sessions_${userId}`, JSON.stringify(sessions));
@@ -172,11 +160,6 @@ export const storage = {
     
     let newCache = [...cached.filter((s: any) => s.id !== session.id), session];
     localStorage.setItem(cacheKey, JSON.stringify(newCache));
-
-    // Save routine_id mapping locally
-    if (session.routine_id) {
-      saveRoutineIdToMap(userId, session.id, session.routine_id);
-    }
     
     // 2. Add to pending sync
     const pendingKey = `pending_sync_${userId}`;
@@ -201,11 +184,9 @@ export const storage = {
 
     try {
       // 3. Save to Supabase in real-time
-      // Omit routine_id from Supabase call to be safe if column doesn't exist
-      const { routine_id, ...sessionToSupabase } = session as any;
       const { error } = await supabase
         .from('sessions')
-        .upsert({ ...sessionToSupabase, user_id: userId });
+        .upsert({ ...session, user_id: userId });
       
       if (error) throw error;
       
@@ -219,24 +200,88 @@ export const storage = {
         console.error('Error saving session to Supabase (offline?):', err);
       }
     }
+
+    // 4. Sync linked routine
+    if (session.routine_id) {
+      const routineId = session.routine_id;
+      const routinesCacheKey = `cached_routines_${userId}`;
+      const routinesCached = safeParse(localStorage.getItem(routinesCacheKey), []);
+      const linkedRoutine = routinesCached.find((r: any) => r.id === routineId);
+      
+      if (linkedRoutine) {
+        const updatedRoutine = {
+          ...linkedRoutine,
+          subject: session.subject,
+          chapter: session.chapter,
+          topics: session.topics,
+          reminder_time: session.reminder_time
+        };
+        
+        const newRoutinesCache = routinesCached.map((r: any) => 
+          r.id === routineId ? updatedRoutine : r
+        );
+        localStorage.setItem(routinesCacheKey, JSON.stringify(newRoutinesCache));
+        
+        // Also update in Supabase
+        if (userId && userId !== 'guest_user') {
+          try {
+            await supabase.from('routines').upsert(updatedRoutine);
+          } catch (err) {
+            console.error('Error syncing linked routine:', err);
+          }
+        }
+
+        // Also update OTHER sessions linked to this routine
+        const sessionsCacheKey = `cached_sessions_${userId}`;
+        const sessionsCached = safeParse(localStorage.getItem(sessionsCacheKey), []);
+        const otherLinkedSessions = sessionsCached.filter((s: any) => s.routine_id === routineId && s.id !== session.id);
+        
+        if (otherLinkedSessions.length > 0) {
+          const updatedSessions = sessionsCached.map((s: any) => {
+            if (s.routine_id === routineId && s.id !== session.id) {
+              return {
+                ...s,
+                subject: session.subject,
+                chapter: session.chapter,
+                topics: session.topics,
+                reminder_time: session.reminder_time
+              };
+            }
+            return s;
+          });
+          localStorage.setItem(sessionsCacheKey, JSON.stringify(updatedSessions));
+          
+          // Also update in Supabase
+          if (userId && userId !== 'guest_user') {
+            try {
+              const sessionsToUpdate = updatedSessions.filter((s: any) => s.routine_id === routineId && s.id !== session.id);
+              const { error: syncError } = await supabase
+                .from('sessions')
+                .upsert(sessionsToUpdate.map(s => ({ ...s, user_id: userId })));
+              
+              if (syncError) throw syncError;
+            } catch (err) {
+              console.error('Error syncing other linked sessions:', err);
+            }
+          }
+        }
+      }
+    }
   },
   saveSessions: async (userId: string, sessions: StudySession[]) => {
     // Bulk save
     // 1. Update local cache
     const cacheKey = `cached_sessions_${userId}`;
-    const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
+    const cached = safeParse(localStorage.getItem(cacheKey), []);
     const newCache = [
       ...cached.filter((s: any) => !sessions.some(ns => ns.id === s.id)),
       ...sessions
     ];
     localStorage.setItem(cacheKey, JSON.stringify(newCache));
 
-    // Save routine_id mappings locally
-    saveRoutineIdsToMap(userId, sessions);
-
     // 2. Add to pending sync for all sessions
     const pendingKey = `pending_sync_${userId}`;
-    const pending = JSON.parse(localStorage.getItem(pendingKey) || '[]');
+    const pending = safeParse(localStorage.getItem(pendingKey), []);
     const newPending = [
       ...pending.filter((p: any) => !sessions.some(s => s.id === (p.id || p.data?.id))),
       ...sessions.map(s => ({ type: 'save', data: s }))
@@ -250,19 +295,14 @@ export const storage = {
 
     try {
       // 3. Save to Supabase in real-time
-      // Omit routine_id from Supabase call to be safe
-      const sessionsToSupabase = sessions.map(s => {
-        const { routine_id, ...rest } = s as any;
-        return { ...rest, user_id: userId };
-      });
       const { error } = await supabase
         .from('sessions')
-        .upsert(sessionsToSupabase);
+        .upsert(sessions.map(s => ({ ...s, user_id: userId })));
       
       if (error) throw error;
 
       // Remove from pending if successful
-      const updatedPending = JSON.parse(localStorage.getItem(pendingKey) || '[]')
+      const updatedPending = safeParse(localStorage.getItem(pendingKey), [])
         .filter((p: any) => !sessions.some(s => s.id === (p.id || p.data?.id)));
       localStorage.setItem(pendingKey, JSON.stringify(updatedPending));
     } catch (err) {
@@ -809,6 +849,128 @@ export const storage = {
       }
     }
   },
+  getStudyTimer: async (userId: string): Promise<StudyTimerState | null> => {
+    try {
+      const { data, error } = await supabase
+        .from('settings')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('type', 'study_timer')
+        .single();
+      
+      if (error && error.code !== 'PGRST116') throw error;
+      
+      if (data) {
+        localStorage.setItem(`cached_study_timer_${userId}`, JSON.stringify(data.settings));
+        return data.settings as StudyTimerState;
+      }
+      return null;
+    } catch (error) {
+      const cached = localStorage.getItem(`cached_study_timer_${userId}`);
+      return cached ? JSON.parse(cached) : null;
+    }
+  },
+  saveStudyTimer: async (userId: string, timer: StudyTimerState) => {
+    localStorage.setItem(`cached_study_timer_${userId}`, JSON.stringify(timer));
+    if (!userId || userId === 'guest_user') return;
+    try {
+      await supabase.from('settings').upsert({ user_id: userId, type: 'study_timer', settings: timer }, { onConflict: 'user_id,type' });
+    } catch (err) {
+      console.error('Error saving study timer:', err);
+    }
+  },
+  getStudyHistory: async (userId: string): Promise<StudyHistory> => {
+    try {
+      const { data, error } = await supabase
+        .from('settings')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('type', 'study_history')
+        .single();
+      
+      if (error && error.code !== 'PGRST116') throw error;
+      
+      if (data) {
+        localStorage.setItem(`cached_study_history_${userId}`, JSON.stringify(data.settings));
+        return data.settings as StudyHistory;
+      }
+      return {};
+    } catch (error) {
+      const cached = localStorage.getItem(`cached_study_history_${userId}`);
+      return cached ? JSON.parse(cached) : {};
+    }
+  },
+  saveStudyHistory: async (userId: string, history: StudyHistory) => {
+    localStorage.setItem(`cached_study_history_${userId}`, JSON.stringify(history));
+    if (!userId || userId === 'guest_user') return;
+    try {
+      await supabase.from('settings').upsert({ user_id: userId, type: 'study_history', settings: history }, { onConflict: 'user_id,type' });
+    } catch (err) {
+      console.error('Error saving study history:', err);
+    }
+  },
+  getFocusTime: async (userId: string): Promise<StudyHistory> => {
+    try {
+      const { data, error } = await supabase
+        .from('study_focus')
+        .select('date, seconds')
+        .eq('user_id', userId);
+      
+      if (error) throw error;
+      
+      const focusData: StudyHistory = {};
+      data.forEach((row: any) => {
+        focusData[row.date] = row.seconds;
+      });
+      
+      localStorage.setItem(`cached_focus_time_${userId}`, JSON.stringify(focusData));
+      return focusData;
+    } catch (error) {
+      console.warn('Offline mode or query error (FocusTime):', error);
+      const cached = localStorage.getItem(`cached_focus_time_${userId}`);
+      return safeParse(cached, {});
+    }
+  },
+  saveFocusTime: async (userId: string, date: string, seconds: number) => {
+    // 1. Update local cache
+    const cacheKey = `cached_focus_time_${userId}`;
+    const cached = safeParse(localStorage.getItem(cacheKey), {});
+    cached[date] = seconds;
+    localStorage.setItem(cacheKey, JSON.stringify(cached));
+    
+    // 2. Add to pending sync
+    const pendingKey = `pending_sync_${userId}`;
+    const pending = safeParse(localStorage.getItem(pendingKey), []);
+    
+    // Update existing pending save for this date if it exists
+    const existingIndex = pending.findIndex((p: any) => p.type === 'save_focus_time' && p.data?.date === date);
+    let newPending;
+    if (existingIndex !== -1) {
+      newPending = [...pending];
+      newPending[existingIndex] = { type: 'save_focus_time', data: { date, seconds } };
+    } else {
+      newPending = [...pending, { type: 'save_focus_time', data: { date, seconds } }];
+    }
+    localStorage.setItem(pendingKey, JSON.stringify(newPending));
+
+    if (!userId || userId === 'guest_user') return;
+
+    try {
+      // 3. Save to Supabase
+      const { error } = await supabase
+        .from('study_focus')
+        .upsert({ user_id: userId, date, seconds }, { onConflict: 'user_id,date' });
+      
+      if (error) throw error;
+      
+      // Remove from pending if successful
+      const updatedPending = safeParse(localStorage.getItem(pendingKey), [])
+        .filter((p: any) => !(p.type === 'save_focus_time' && p.data?.date === date));
+      localStorage.setItem(pendingKey, JSON.stringify(updatedPending));
+    } catch (err) {
+      console.error('Error saving focus time to Supabase:', err);
+    }
+  },
   getProfile: async (userId: string): Promise<UserProfile> => {
     console.log('[Storage] Fetching profile for user:', userId);
     try {
@@ -914,8 +1076,7 @@ export const storage = {
       try {
         let error;
         if (change.type === 'save') {
-          const { routine_id, ...supabaseData } = change.data as any;
-          ({ error } = await supabase.from('sessions').upsert({ ...supabaseData, user_id: userId }));
+          ({ error } = await supabase.from('sessions').upsert({ ...change.data, user_id: userId }));
         } else if (change.type === 'toggle') {
           ({ error } = await supabase.from('sessions').update({ completed: change.completed }).eq('id', change.id).eq('user_id', userId));
         } else if (change.type === 'delete') {
@@ -927,7 +1088,22 @@ export const storage = {
         } else if (change.type === 'permanent_delete_routine') {
           ({ error } = await supabase.from('routines').delete().eq('id', change.id).eq('user_id', userId));
         } else if (change.type === 'save_routine') {
-          ({ error } = await supabase.from('routines').upsert({ ...change.data, user_id: userId }));
+          const routineData = change.data;
+          let { error: routineError } = await supabase.from('routines').upsert({ ...routineData, user_id: userId });
+          
+          // Fallback for missing column
+          if (routineError && routineError.message?.includes("Could not find the 'specific_dates' column")) {
+            const fallbackData = {
+              ...routineData,
+              topics: `__JSON_FALLBACK__:${JSON.stringify({
+                topics: routineData.topics,
+                specific_dates: routineData.specific_dates
+              })}`,
+              specific_dates: undefined
+            };
+            ({ error: routineError } = await supabase.from('routines').upsert({ ...fallbackData, user_id: userId }));
+          }
+          error = routineError;
         } else if (change.type === 'delete_routine') {
           ({ error } = await supabase.from('routines').update({ deleted_at: change.deleted_at }).eq('id', change.id).eq('user_id', userId));
         } else if (change.type === 'restore_routine') {
@@ -942,6 +1118,9 @@ export const storage = {
           ({ error } = await supabase.from('settings').upsert({ user_id: userId, type: 'schedules', settings: change.data }, { onConflict: 'user_id,type' }));
         } else if (change.type === 'save_profile') {
           ({ error } = await supabase.from('profiles').upsert({ ...change.data, user_id: userId }, { onConflict: 'user_id' }));
+        } else if (change.type === 'save_focus_time') {
+          const { date, seconds } = change.data;
+          ({ error } = await supabase.from('study_focus').upsert({ user_id: userId, date, seconds }, { onConflict: 'user_id,date' }));
         }
         
         if (!error) {
@@ -993,13 +1172,10 @@ export const storage = {
 
       // 2. Sync sessions
       if (guestSessions.length > 0 || guestTrash.length > 0) {
-        const allSessions = [...guestSessions, ...guestTrash].map(s => {
-          const { routine_id, ...rest } = s as any;
-          return {
-            ...rest,
-            user_id: newUserId
-          };
-        });
+        const allSessions = [...guestSessions, ...guestTrash].map(s => ({
+          ...s,
+          user_id: newUserId
+        }));
         
         const { error } = await supabase.from('sessions').upsert(allSessions);
         if (error) console.error('Error syncing guest sessions:', error);
@@ -1076,15 +1252,24 @@ export const storage = {
       // 4. Merge and Push to Supabase (if local has something new)
       // This is a safety measure to ensure local data is also pushed
       if (localSessions.length > 0 || localTrash.length > 0) {
-        const allSessions = [...localSessions, ...localTrash].map(s => {
-          const { routine_id, ...rest } = s as any;
-          return { ...rest, user_id: userId };
-        });
+        const allSessions = [...localSessions, ...localTrash].map(s => ({ ...s, user_id: userId }));
         await supabase.from('sessions').upsert(allSessions);
       }
       if (localRoutines.length > 0) {
         const allRoutines = localRoutines.map((r: any) => ({ ...r, user_id: userId }));
-        await supabase.from('routines').upsert(allRoutines);
+        const { error: routineError } = await supabase.from('routines').upsert(allRoutines);
+        
+        if (routineError && routineError.message?.includes("Could not find the 'specific_dates' column")) {
+          const fallbackRoutines = allRoutines.map((r: any) => ({
+            ...r,
+            topics: `__JSON_FALLBACK__:${JSON.stringify({
+              topics: r.topics,
+              specific_dates: r.specific_dates
+            })}`,
+            specific_dates: undefined
+          }));
+          await supabase.from('routines').upsert(fallbackRoutines);
+        }
       }
       if (localSettings) {
         await supabase.from('settings').upsert({ user_id: userId, type: 'app', settings: localSettings }, { onConflict: 'user_id,type' });
@@ -1116,7 +1301,28 @@ export const storage = {
       
       if (error) throw error;
       
-      const routines = data as RoutineItem[];
+      const routines = (data || []).map(r => {
+        let specific_dates = r.specific_dates;
+        let topics = r.topics;
+
+        // Check if topics contains the JSON fallback for missing column
+        if (topics && typeof topics === 'string' && topics.startsWith('__JSON_FALLBACK__:')) {
+          try {
+            const fallback = JSON.parse(topics.replace('__JSON_FALLBACK__:', ''));
+            topics = fallback.topics;
+            specific_dates = fallback.specific_dates;
+          } catch (e) {
+            console.error('Error parsing routine fallback:', e);
+          }
+        }
+
+        return {
+          ...r,
+          topics,
+          specific_dates
+        } as RoutineItem;
+      });
+
       // Cache routines locally
       localStorage.setItem(`cached_routines_${userId}`, JSON.stringify(routines));
       return routines;
@@ -1144,6 +1350,7 @@ export const storage = {
       topics: routine.topics ?? existing?.topics ?? '',
       date: routine.date ?? existing?.date ?? format(new Date(), 'yyyy-MM-dd'),
       end_date: routine.end_date !== undefined ? routine.end_date : (existing?.end_date ?? null),
+      specific_dates: routine.specific_dates !== undefined ? routine.specific_dates : (existing?.specific_dates ?? null),
       reminder_time: routine.reminder_time !== undefined ? routine.reminder_time : (existing?.reminder_time ?? null),
       created_at: routine.created_at ?? existing?.created_at ?? new Date().toISOString(),
       countdown: routine.countdown ?? existing?.countdown ?? 0,
@@ -1168,13 +1375,34 @@ export const storage = {
     }
     localStorage.setItem(pendingKey, JSON.stringify(newPending));
 
+    // 4. Save to Supabase in real-time
     try {
-      // 4. Save to Supabase in real-time
       const { error } = await supabase
         .from('routines')
         .upsert(fullRoutine);
       
-      if (error) throw error;
+      if (error) {
+        // Handle missing column error by using a fallback in the topics field
+        if (error.message?.includes("Could not find the 'specific_dates' column")) {
+          console.warn('[Storage] specific_dates column missing in Supabase. Using fallback in topics field.');
+          const fallbackRoutine = {
+            ...fullRoutine,
+            topics: `__JSON_FALLBACK__:${JSON.stringify({
+              topics: fullRoutine.topics,
+              specific_dates: fullRoutine.specific_dates
+            })}`,
+            specific_dates: undefined // Remove the problematic field
+          };
+          
+          const { error: fallbackError } = await supabase
+            .from('routines')
+            .upsert(fallbackRoutine);
+          
+          if (fallbackError) throw fallbackError;
+        } else {
+          throw error;
+        }
+      }
 
       // Remove from pending if successful
       const updatedPending = JSON.parse(localStorage.getItem(pendingKey) || '[]').filter((p: any) => (p.id || p.data?.id) !== routineId);
@@ -1184,6 +1412,41 @@ export const storage = {
         console.log('[Storage] Network unavailable for saveRoutine. Routine cached locally.');
       } else {
         console.error('Error saving routine to Supabase:', err);
+      }
+    }
+
+    // 5. Sync linked sessions
+    const sessionsCacheKey = `cached_sessions_${userId}`;
+    const sessionsCached = safeParse(localStorage.getItem(sessionsCacheKey), []);
+    const linkedSessions = sessionsCached.filter((s: any) => s.routine_id === routineId);
+    
+    if (linkedSessions.length > 0) {
+      const updatedSessions = sessionsCached.map((s: any) => {
+        if (s.routine_id === routineId) {
+          return {
+            ...s,
+            subject: fullRoutine.subject,
+            chapter: fullRoutine.chapter,
+            topics: fullRoutine.topics,
+            reminder_time: fullRoutine.reminder_time
+          };
+        }
+        return s;
+      });
+      localStorage.setItem(sessionsCacheKey, JSON.stringify(updatedSessions));
+      
+      // Also update in Supabase
+      if (userId && userId !== 'guest_user') {
+        try {
+          const sessionsToUpdate = updatedSessions.filter((s: any) => s.routine_id === routineId);
+          const { error: syncError } = await supabase
+            .from('sessions')
+            .upsert(sessionsToUpdate.map(s => ({ ...s, user_id: userId })));
+          
+          if (syncError) throw syncError;
+        } catch (err) {
+          console.error('Error syncing linked sessions:', err);
+        }
       }
     }
   },
@@ -1196,6 +1459,32 @@ export const storage = {
     if (routineToDelete) {
       const newCache = cached.map((r: any) => r.id === id ? { ...r, deleted_at } : r);
       localStorage.setItem(cacheKey, JSON.stringify(newCache));
+
+      // Sync linked sessions
+      const sessionsCacheKey = `cached_sessions_${userId}`;
+      const sessionsCached = safeParse(localStorage.getItem(sessionsCacheKey), []);
+      const linkedSessions = sessionsCached.filter((s: any) => s.routine_id === id);
+      
+      if (linkedSessions.length > 0) {
+        const updatedSessions = sessionsCached.map((s: any) => {
+          if (s.routine_id === id) {
+            return { ...s, deleted_at };
+          }
+          return s;
+        });
+        localStorage.setItem(sessionsCacheKey, JSON.stringify(updatedSessions));
+        
+        if (userId && userId !== 'guest_user') {
+          try {
+            const sessionsToUpdate = updatedSessions.filter((s: any) => s.routine_id === id);
+            await Promise.all(sessionsToUpdate.map(async (s: any) => {
+              await supabase.from('sessions').upsert({ ...s, user_id: userId });
+            }));
+          } catch (err) {
+            console.error('Error syncing deleted sessions:', err);
+          }
+        }
+      }
     }
 
     // Add to pending sync
@@ -1241,6 +1530,32 @@ export const storage = {
     const newCache = cached.map((r: any) => r.id === id ? { ...r, deleted_at: null } : r);
     localStorage.setItem(cacheKey, JSON.stringify(newCache));
 
+    // Sync linked sessions
+    const sessionsCacheKey = `cached_sessions_${userId}`;
+    const sessionsCached = safeParse(localStorage.getItem(sessionsCacheKey), []);
+    const linkedSessions = sessionsCached.filter((s: any) => s.routine_id === id);
+    
+    if (linkedSessions.length > 0) {
+      const updatedSessions = sessionsCached.map((s: any) => {
+        if (s.routine_id === id) {
+          return { ...s, deleted_at: null };
+        }
+        return s;
+      });
+      localStorage.setItem(sessionsCacheKey, JSON.stringify(updatedSessions));
+      
+      if (userId && userId !== 'guest_user') {
+        try {
+          const sessionsToUpdate = updatedSessions.filter((s: any) => s.routine_id === id);
+          await Promise.all(sessionsToUpdate.map(async (s: any) => {
+            await supabase.from('sessions').upsert({ ...s, user_id: userId });
+          }));
+        } catch (err) {
+          console.error('Error syncing restored sessions:', err);
+        }
+      }
+    }
+
     const pendingKey = `pending_sync_${userId}`;
     const pending = JSON.parse(localStorage.getItem(pendingKey) || '[]');
     const newPending = [...pending.filter((p: any) => (p.id || p.data?.id) !== id), { type: 'restore_routine', id }];
@@ -1269,6 +1584,24 @@ export const storage = {
     const cached = JSON.parse(localStorage.getItem(cacheKey) || '[]');
     const newCache = cached.filter((r: any) => r.id !== id);
     localStorage.setItem(cacheKey, JSON.stringify(newCache));
+
+    // Sync linked sessions
+    const sessionsCacheKey = `cached_sessions_${userId}`;
+    const sessionsCached = safeParse(localStorage.getItem(sessionsCacheKey), []);
+    const linkedSessions = sessionsCached.filter((s: any) => s.routine_id === id);
+    
+    if (linkedSessions.length > 0) {
+      const updatedSessions = sessionsCached.filter((s: any) => s.routine_id !== id);
+      localStorage.setItem(sessionsCacheKey, JSON.stringify(updatedSessions));
+      
+      if (userId && userId !== 'guest_user') {
+        try {
+          await supabase.from('sessions').delete().eq('routine_id', id).eq('user_id', userId);
+        } catch (err) {
+          console.error('Error syncing permanently deleted sessions:', err);
+        }
+      }
+    }
 
     const pendingKey = `pending_sync_${userId}`;
     const pending = JSON.parse(localStorage.getItem(pendingKey) || '[]');

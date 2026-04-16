@@ -51,7 +51,8 @@ import {
   Sunset,
   CloudSun,
   Stars,
-  Dumbbell
+  Dumbbell,
+  Search
 } from 'lucide-react';
 import { 
   format, 
@@ -74,6 +75,8 @@ import { bn } from 'date-fns/locale';
 import { 
   AreaChart,
   Area,
+  BarChart,
+  Bar,
   XAxis, 
   YAxis, 
   CartesianGrid, 
@@ -81,12 +84,14 @@ import {
   ResponsiveContainer,
   PieChart,
   Pie,
-  Cell
+  Cell,
+  Line,
+  ComposedChart
 } from 'recharts';
 import { motion, AnimatePresence, Reorder, useDragControls } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { storage, type StudySession, type AppSettings, type UserProfile, type TimerState, getWeekDays, type RoutineItem, safeParse, type PrayerSettings, type PrayerTime, type ScheduleItem } from './types';
+import { storage, type StudySession, type AppSettings, type UserProfile, type TimerState, getWeekDays, type RoutineItem, safeParse, type PrayerSettings, type PrayerTime, type ScheduleItem, type StudyTimerState, type StudyHistory } from './types';
 import { supabase } from './lib/supabase';
 import { AuthPage } from './components/AuthPage';
 import { notificationService } from './lib/notifications';
@@ -119,23 +124,6 @@ const RoutineCard = ({
 }: any) => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   
-  let statusText = '';
-  let statusColor = '';
-  
-  if (routine.end_date) {
-    const today = startOfDay(new Date());
-    const end = startOfDay(new Date(routine.end_date));
-    const diff = differenceInDays(end, today);
-    
-    if (diff < 0) {
-      statusText = 'End';
-      statusColor = 'text-red-500';
-    } else {
-      statusText = diff.toString();
-      statusColor = 'text-orange-500';
-    }
-  }
-
   return (
     <div 
       key={`${routine.id}-${index}`}
@@ -153,19 +141,19 @@ const RoutineCard = ({
             darkMode ? "bg-white/5 text-white/50" : "bg-slate-100 text-slate-500"
           )}>
             <Calendar size={12} className="text-indigo-500" />
-            {format(new Date(routine.date), 'MMM d, yyyy')}
-          </div>
-
-          {statusText && (
-            <div className={cn(
-              "flex items-center gap-2 px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-[0.15em] shrink-0",
-              darkMode ? "bg-white/5" : "bg-slate-100",
-              statusColor
-            )}>
-              <Clock size={10} />
-              {statusText} {statusText === 'End' ? '' : 'Days Left'}
+            <div className="flex flex-wrap gap-1 max-w-[200px]">
+              {routine.specific_dates && routine.specific_dates.length > 0 ? (
+                routine.specific_dates.sort().map((d: string, i: number) => (
+                  <span key={i} className="whitespace-nowrap">
+                    {format(new Date(d), 'MMM d')}
+                    {i < routine.specific_dates.length - 1 ? ',' : ''}
+                  </span>
+                ))
+              ) : (
+                format(new Date(routine.date), 'MMM d, yyyy')
+              )}
             </div>
-          )}
+          </div>
         </div>
 
         <div className="space-y-3">
@@ -261,12 +249,7 @@ const RoutineCard = ({
             </button>
             {view === 'active' && (
               <button
-                onClick={() => {
-                  const rId = routine.id;
-                  if (rId) {
-                    onAddTask(routine.subject, routine.chapter, routine.topics || '', routine.date, routine.end_date, routine.reminder_time, rId);
-                  }
-                }}
+                onClick={() => onAddTask(routine.id, routine.subject, routine.chapter, routine.topics || '', routine.date, routine.end_date, routine.reminder_time, routine.specific_dates)}
                 className={cn(
                   "p-3 rounded-2xl transition-all border active:scale-95 flex items-center justify-center",
                   darkMode 
@@ -344,6 +327,299 @@ const RoutineCard = ({
           </div>
         )}
       </AnimatePresence>
+    </div>
+  );
+};
+
+
+const FlaskModal = ({ isOpen, onClose, focusTime, isFocusActive, darkMode, goalHours, onSetGoal }: any) => {
+  const lastClickTime = useRef(0);
+
+  useEffect(() => {
+    if (isOpen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = 'unset';
+    }
+    return () => { document.body.style.overflow = 'unset'; };
+  }, [isOpen]);
+
+  if (!isOpen) return null;
+
+  const maxSeconds = goalHours * 3600;
+  const fillPercentage = Math.min((focusTime / maxSeconds) * 100, 100);
+  const isFull = fillPercentage >= 100;
+  
+  // Adjusted Water Level calculation for better visibility
+  // 142 is bottom, 50 is base-top, 20 is neck-top
+  // Higher fill percentage = lower Y value (higher in the bottle)
+  // We map 0-100 to 142-20
+  const waterLevelY = 142 - (fillPercentage * 1.22);
+
+  const handleDoubleClick = () => {
+    const now = Date.now();
+    if (now - lastClickTime.current < 300) {
+      onClose();
+    }
+    lastClickTime.current = now;
+  };
+
+  return (
+    <div 
+      className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/90 backdrop-blur-3xl touch-none" 
+      onClick={handleDoubleClick}
+    >
+      <motion.div 
+        drag="y"
+        dragConstraints={{ top: 0, bottom: 500 }}
+        dragElastic={0.2}
+        onDragEnd={(_, info) => {
+          if (info.offset.y > 100) {
+            onClose();
+          }
+        }}
+        initial={{ opacity: 0, scale: 0.8, y: -100 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.8, y: 100 }}
+        className={cn(
+          "w-full max-w-[330px] p-6 py-10 rounded-[4rem] border shadow-[0_0_100px_rgba(14,165,233,0.1)] flex flex-col items-center gap-6 relative overflow-hidden",
+          darkMode ? "bg-slate-950/95 border-white/10" : "bg-white/95 border-slate-200"
+        )}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="absolute top-5 left-1/2 -translate-x-1/2 w-12 h-1.5 rounded-full bg-white/20 opacity-30" />
+        
+        {/* Goal Adjuster */}
+        <div className="flex items-center gap-4 relative z-10 bg-white/5 backdrop-blur-xl px-4 py-2 rounded-2xl border border-white/10 shadow-xl">
+          <button 
+            onClick={() => onSetGoal(Math.max(1, goalHours - 1))}
+            className="w-10 h-10 flex items-center justify-center rounded-xl bg-sky-500/20 hover:bg-sky-500/40 transition-all text-sky-400 font-bold active:scale-95"
+          >
+            -
+          </button>
+          <div className="text-center min-w-[80px]">
+            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-sky-400 mb-0.5">GOAL</p>
+            <p className={cn("text-xl font-black tracking-tighter", darkMode ? "text-white" : "text-slate-950")}>{goalHours}H</p>
+          </div>
+          <button 
+            onClick={() => onSetGoal(Math.min(24, goalHours + 1))}
+            className="w-10 h-10 flex items-center justify-center rounded-xl bg-sky-500/20 hover:bg-sky-500/40 transition-all text-sky-400 font-bold active:scale-95"
+          >
+            +
+          </button>
+        </div>
+
+        {/* Realistic Erlenmeyer Flask */}
+        <div className="relative w-64 h-80 flex items-center justify-center">
+          <svg viewBox="0 0 100 150" className="w-full h-full drop-shadow-[0_15px_30px_rgba(14,165,233,0.25)] overflow-visible">
+            <defs>
+              <linearGradient id="skyWaterGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                <stop offset="0%" stopColor="#0891b2" /> 
+                <stop offset="100%" stopColor="#155e75" /> 
+              </linearGradient>
+              
+              <radialGradient id="waterSurfaceGlow" cx="50%" cy="0%" r="50%">
+                <stop offset="0%" stopColor="rgba(255,255,255,0.6)" />
+                <stop offset="100%" stopColor="transparent" />
+              </radialGradient>
+
+              <filter id="glassBlur">
+                <feGaussianBlur stdDeviation="1" />
+              </filter>
+            </defs>
+
+            {/* Ground Reflection & Overflow */}
+            <ellipse cx="50" cy="144" rx="40" ry="6" fill="rgba(14,165,233,0.1)" filter="blur(10px)" />
+            
+            {isFull && (
+              <g>
+                {/* Spilled water puddle on ground */}
+                <motion.ellipse 
+                  cx="50" cy="144" rx="45" ry="8" 
+                  fill="#0891b2" 
+                  style={{ opacity: 0.3 }}
+                  initial={{ scale: 0.5, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 0.3 }}
+                  transition={{ duration: 2, ease: "easeOut" }}
+                />
+                {/* Scattered spilled droplets around the flask */}
+                {[
+                  { x: 22, y: 143, r: 2.5 },
+                  { x: 78, y: 145, r: 2 },
+                  { x: 35, y: 147, r: 1.5 },
+                  { x: 65, y: 142, r: 1.8 },
+                  { x: 40, y: 141, r: 1.2 },
+                  { x: 60, y: 148, r: 1.4 }
+                ].map((d, i) => (
+                  <motion.circle
+                    key={`ground-drop-${i}`}
+                    cx={d.x}
+                    cy={d.y}
+                    r={d.r}
+                    fill="#0891b2"
+                    initial={{ opacity: 0, scale: 0 }}
+                    animate={{ opacity: 0.6, scale: 1 }}
+                    transition={{ delay: 0.5 + (i * 0.2), duration: 1 }}
+                  />
+                ))}
+              </g>
+            )}
+
+            {/* Erlenmeyer Flask Path */}
+            <path 
+              id="erlenmeyer-path"
+              d="M42 20 L58 20 L58 50 L95 132 C98 142 2 142 5 132 L42 50 Z" 
+              fill="rgba(255,255,255,0.05)"
+              stroke={darkMode ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.1)"}
+              strokeWidth="2"
+            />
+            
+            {/* Water Mask */}
+            <mask id="flask-water-mask">
+              <path d="M42 20 L58 20 L58 50 L95 132 C98 142 2 142 5 132 L42 50 Z" fill="white" />
+            </mask>
+            
+            <g mask="url(#flask-water-mask)">
+              {/* Main Water Body */}
+              <motion.rect 
+                x="0" 
+                width="100" 
+                height="150" 
+                fill="url(#skyWaterGradient)"
+                initial={{ y: 150 }}
+                animate={{ y: isFocusActive ? [waterLevelY, waterLevelY + 1.2, waterLevelY] : waterLevelY }}
+                transition={{ 
+                  y: isFocusActive 
+                    ? { duration: 2, repeat: Infinity, repeatType: "loop", ease: "easeInOut" } 
+                    : { type: "spring", damping: 25, stiffness: 45 } 
+                }}
+              />
+              
+              {/* Surface Highlight/Liquid Look */}
+              <motion.ellipse
+                cx="50"
+                cy={waterLevelY}
+                rx="50"
+                ry="3"
+                fill="url(#waterSurfaceGlow)"
+                animate={{ y: isFocusActive ? [0, 1.2, 0] : 0 }}
+                transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+              />
+
+              {/* Bubbles */}
+              {isFocusActive && Array.from({ length: 15 }).map((_, i) => (
+                <motion.circle
+                  key={i}
+                  r={Math.random() * 1.5 + 0.5}
+                  fill="rgba(255,255,255,0.45)"
+                  initial={{ cx: 20 + Math.random() * 60, cy: 135 }}
+                  animate={{ 
+                    cy: [135, waterLevelY + 10],
+                    opacity: [0, 0.8, 0],
+                    x: [0, (Math.random() - 0.5) * 12, 0]
+                  }}
+                  transition={{ 
+                    duration: 3 + Math.random() * 2, 
+                    repeat: Infinity, 
+                    delay: Math.random() * 5,
+                    ease: "easeOut"
+                  }}
+                />
+              ))}
+
+              {/* Ripples at Surface */}
+              {isFocusActive && (
+                <g>
+                  {[0, 0.3, 0.6].map((delay, i) => (
+                    <motion.ellipse
+                      key={`ripple-${i}`}
+                      cx="50"
+                      cy={waterLevelY}
+                      rx="0"
+                      ry="0"
+                      fill="none"
+                      stroke="rgba(255,255,255,0.4)"
+                      strokeWidth="0.5"
+                      animate={{
+                        rx: [0, 20],
+                        ry: [0, 3],
+                        opacity: [0.8, 0],
+                      }}
+                      transition={{
+                        duration: 1.5,
+                        repeat: Infinity,
+                        delay: delay + 1.0, // Start after drop hits
+                        ease: "easeOut"
+                      }}
+                    />
+                  ))}
+                </g>
+              )}
+            </g>
+
+            {/* Shiny Glass Reflections */}
+            <path 
+              d="M45 25 L45 50 L15 125" 
+              fill="none" 
+              stroke="rgba(255,255,255,0.3)" 
+              strokeWidth="3" 
+              strokeLinecap="round"
+              filter="url(#glassBlur)"
+            />
+            <ellipse cx="50" cy="20" rx="9" ry="3" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="2" />
+
+            {/* Falling Water Drop (Realistic teardrop) */}
+            {isFocusActive && (
+              <g>
+                <motion.path
+                  d="M50 20 C 50 20, 53 28, 50 32 C 47 28, 50 20, 50 20"
+                  fill="#0891b2"
+                  initial={{ y: -10, opacity: 0, scaleY: 0.8 }}
+                  animate={{
+                    y: [0, waterLevelY - 20],
+                    opacity: [0, 1, 1, 1],
+                    scaleY: [0.8, 1.5, 1],
+                    scaleX: [1.2, 0.7, 1]
+                  }}
+                  transition={{
+                    duration: 1,
+                    repeat: Infinity,
+                    ease: [0.4, 0, 1, 1], // Custom easing for gravity
+                  }}
+                />
+                
+                {/* Impact Splash removed */}
+              </g>
+            )}
+          </svg>
+        </div>
+
+        <div className="w-full space-y-4 relative z-10 text-center">
+          <div className="flex justify-between items-end px-2">
+            <div className="text-left">
+              <p className={cn("text-[9px] font-black uppercase tracking-[0.2em] opacity-40", darkMode ? "text-white" : "text-slate-950")}>VOLUME</p>
+              <p className={cn("text-3xl font-black tracking-tighter tabular-nums", darkMode ? "text-white" : "text-slate-950")}>
+                {Math.floor(focusTime / 3600)}<span className="text-sky-400 text-sm ml-1">H</span> {Math.floor((focusTime % 3600) / 60)}<span className="text-sky-400 text-sm ml-1">M</span>
+              </p>
+            </div>
+            <div className="text-right">
+              <p className={cn("text-[9px] font-black uppercase tracking-[0.2em] opacity-40", darkMode ? "text-white" : "text-slate-950")}>PERCENT</p>
+              <p className="text-3xl font-black text-sky-400 tracking-tighter tabular-nums">
+                {fillPercentage.toFixed(1)}<span className="text-sm ml-1">%</span>
+              </p>
+            </div>
+          </div>
+          
+          <div className={cn("h-3 w-full rounded-2xl overflow-hidden p-1 shadow-inner", darkMode ? "bg-white/5" : "bg-slate-100/30")}>
+            <motion.div 
+              className="h-full bg-gradient-to-r from-sky-400 via-sky-300 to-sky-500 rounded-xl shadow-[0_0_15px_rgba(14,165,233,0.4)]"
+              initial={{ width: 0 }}
+              animate={{ width: `${fillPercentage}%` }}
+              transition={{ duration: 1, ease: "circOut" }}
+            />
+          </div>
+        </div>
+      </motion.div>
     </div>
   );
 };
@@ -569,6 +845,7 @@ const PrayerModal = ({ isOpen, onClose, settings, onSave, darkMode }: any) => {
   );
 };
 
+
 const RoutinePage = ({ 
   routines, 
   onSaveRoutine, 
@@ -588,7 +865,7 @@ const RoutinePage = ({
   onDeleteRoutine: (id: string) => Promise<void>,
   onRestoreRoutine: (id: string) => Promise<void>,
   onPermanentlyDeleteRoutine: (id: string) => Promise<void>,
-  onAddTask: (subject: string, chapter: string, topics: string, date: string, end_date?: string, reminder_time?: string, routine_id?: string) => Promise<void>,
+  onAddTask: (routineId: string, subject: string, chapter: string, topics: string, date: string, end_date?: string, reminder_time?: string, specific_dates?: string[]) => Promise<void>,
   onSync: () => Promise<void>,
   onOpenPrayerTimes: () => void,
   isSyncing: boolean,
@@ -601,8 +878,7 @@ const RoutinePage = ({
   const [chapter, setChapter] = useState('');
   const [topics, setTopics] = useState('');
   const [reminderTime, setReminderTime] = useState('');
-  const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
-  const [selectedEndDate, setSelectedEndDate] = useState('');
+  const [selectedDates, setSelectedDates] = useState<string[]>([format(new Date(), 'yyyy-MM-dd')]);
   const [editingRoutineId, setEditingRoutineId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
@@ -611,12 +887,63 @@ const RoutinePage = ({
   const [printStartDate, setPrintStartDate] = useState('');
   const [printEndDate, setPrintEndDate] = useState('');
   const [view, setView] = useState<'active' | 'ended' | 'deleted'>('active');
+  const [calendarMonth, setCalendarMonth] = useState(new Date());
+  const [focusedDate, setFocusedDate] = useState<string | null>(format(new Date(), 'yyyy-MM-dd'));
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchVisible, setIsSearchVisible] = useState(false);
   const printRef = useRef<HTMLDivElement>(null);
+
+  const calendarDays = useMemo(() => {
+    const start = startOfWeek(startOfMonth(calendarMonth), { weekStartsOn: 1 });
+    const days = [];
+    let current = start;
+    for (let i = 0; i < 42; i++) {
+      days.push(current);
+      current = addDays(current, 1);
+    }
+    return days;
+  }, [calendarMonth]);
+
+  useEffect(() => {
+    if (selectedDates.length > 0) {
+      try {
+        const date = new Date(selectedDates[0]);
+        if (!isNaN(date.getTime())) {
+          setCalendarMonth(date);
+        }
+      } catch (e) {}
+    }
+  }, [selectedDates]);
+
+  const allRoutines = useMemo(() => routines.filter(r => !r.deleted_at), [routines]);
+
+  const routinesForFocusedDate = useMemo(() => {
+    if (!focusedDate) return [];
+    return allRoutines.filter(r => {
+      if (r.specific_dates && r.specific_dates.length > 0) {
+        return r.specific_dates.includes(focusedDate);
+      }
+      try {
+        const start = startOfDay(new Date(r.date));
+        const end = r.end_date ? startOfDay(new Date(r.end_date)) : start;
+        const target = startOfDay(new Date(focusedDate));
+        return target >= start && target <= end;
+      } catch (e) { return false; }
+    });
+  }, [focusedDate, allRoutines]);
 
   const activeRoutines = useMemo(() => routines.filter(r => {
     if (r.deleted_at) return false;
-    if (!r.end_date) return true;
+    
     const today = startOfDay(new Date());
+    
+    if (r.specific_dates && r.specific_dates.length > 0) {
+      const lastDateStr = [...r.specific_dates].sort().pop()!;
+      const lastDate = startOfDay(new Date(lastDateStr));
+      return differenceInDays(today, lastDate) <= 0;
+    }
+    
+    if (!r.end_date) return true;
     const end = startOfDay(new Date(r.end_date));
     // Stay in active until it ends
     return differenceInDays(today, end) <= 0;
@@ -624,8 +951,16 @@ const RoutinePage = ({
 
   const endedRoutines = useMemo(() => routines.filter(r => {
     if (r.deleted_at) return false;
-    if (!r.end_date) return false;
+    
     const today = startOfDay(new Date());
+    
+    if (r.specific_dates && r.specific_dates.length > 0) {
+      const lastDateStr = [...r.specific_dates].sort().pop()!;
+      const lastDate = startOfDay(new Date(lastDateStr));
+      return differenceInDays(today, lastDate) > 0;
+    }
+    
+    if (!r.end_date) return false;
     const end = startOfDay(new Date(r.end_date));
     // Move to ended after it ends
     return differenceInDays(today, end) > 0;
@@ -633,9 +968,16 @@ const RoutinePage = ({
 
   const deletedRoutines = useMemo(() => routines.filter(r => !!r.deleted_at), [routines]);
 
-  const currentRoutines = useMemo(() => 
-    view === 'active' ? activeRoutines : view === 'ended' ? endedRoutines : deletedRoutines
-  , [view, activeRoutines, endedRoutines, deletedRoutines]);
+  const currentRoutines = useMemo(() => {
+    const baseRoutines = view === 'active' ? activeRoutines : view === 'ended' ? endedRoutines : deletedRoutines;
+    if (!searchQuery.trim()) return baseRoutines;
+    
+    const query = searchQuery.toLowerCase();
+    return baseRoutines.filter(r => 
+      r.subject.toLowerCase().includes(query) || 
+      r.chapter.toLowerCase().includes(query)
+    );
+  }, [view, activeRoutines, endedRoutines, deletedRoutines, searchQuery]);
 
   const generatePDF = async () => {
     if (isGeneratingPDF) return;
@@ -659,9 +1001,33 @@ const RoutinePage = ({
       const baseRoutines = view === 'deleted' ? deletedRoutines : routines.filter(r => !r.deleted_at);
       
       // Filter routines by date range
-      const routinesToPrint = baseRoutines.filter(r => {
-        const rDate = startOfDay(new Date(r.date));
-        return rDate >= startDate && rDate <= endDate;
+      const routinesToPrint: RoutineItem[] = [];
+      baseRoutines.forEach(r => {
+        if (r.specific_dates && r.specific_dates.length > 0) {
+          const sortedDates = [...r.specific_dates].sort();
+          r.specific_dates.forEach(d => {
+            const dDate = startOfDay(new Date(d));
+            if (dDate >= startDate && dDate <= endDate) {
+              // Create a virtual routine for this date to fit the grouping logic
+              routinesToPrint.push({ 
+                ...r, 
+                date: d,
+                // Keep track of original range for display
+                original_start: sortedDates[0],
+                original_end: sortedDates[sortedDates.length - 1]
+              } as any);
+            }
+          });
+        } else {
+          const rDate = startOfDay(new Date(r.date));
+          if (rDate >= startDate && rDate <= endDate) {
+            routinesToPrint.push({
+              ...r,
+              original_start: r.date,
+              original_end: r.end_date
+            } as any);
+          }
+        }
       });
 
       if (routinesToPrint.length === 0) {
@@ -686,21 +1052,21 @@ const RoutinePage = ({
       let currentChunk: string[] = [];
       let estimatedHeight = 0;
       // A4 is 210x297mm. At 800px width, height is ~1131px.
-      // We use a safe limit of 920px to account for margins and header/footer.
-      const maxHeight = 920; 
+      // We use a safe limit of 1050px to utilize more of the page while preventing cutting.
+      const maxHeight = 1050; 
 
       allDatesToPrint.forEach(dateStr => {
         const dayRoutines = groupedRoutines[dateStr] || [];
         // Estimate height for this date block
         let dayHeight = 0;
         if (dayRoutines.length === 0) {
-          dayHeight = 120;
+          dayHeight = 100;
         } else {
           let routinesHeight = 0;
           dayRoutines.forEach(r => {
             const topicsLineCount = r.topics ? r.topics.split('\n').length : 1;
-            // Each topic line is roughly 24px, plus base row height
-            routinesHeight += 65 + (topicsLineCount * 24);
+            // Each topic line is roughly 22px, plus base row height
+            routinesHeight += 60 + (topicsLineCount * 22);
           });
           // Date cell content (Date + Day + Start/End) needs at least ~140px
           dayHeight = Math.max(routinesHeight, 140);
@@ -709,9 +1075,9 @@ const RoutinePage = ({
         if (estimatedHeight + dayHeight > maxHeight && currentChunk.length > 0) {
           dateChunks.push(currentChunk);
           currentChunk = [dateStr];
-          estimatedHeight = 380 + dayHeight; // Base header/footer/padding height (~380px)
+          estimatedHeight = 260 + dayHeight; // Base header/footer/padding height (~260px)
         } else {
-          if (currentChunk.length === 0) estimatedHeight = 380; 
+          if (currentChunk.length === 0) estimatedHeight = 260; 
           currentChunk.push(dateStr);
           estimatedHeight += dayHeight;
         }
@@ -731,47 +1097,62 @@ const RoutinePage = ({
         tempContainer.style.left = '-9999px';
         tempContainer.style.top = '0';
         tempContainer.style.width = '800px';
-        tempContainer.style.padding = '40px';
+        tempContainer.style.padding = '0';
         tempContainer.style.backgroundColor = '#ffffff';
         tempContainer.style.color = '#000000';
         tempContainer.style.fontFamily = '"Hind Siliguri", "Inter", sans-serif';
         
         let htmlContent = `
-          <div style="font-family: 'Hind Siliguri', sans-serif; color: #1e293b; background-color: #ffffff; padding: 20px;">
-            <div style="display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 3px solid #4338CA; padding-bottom: 20px; margin-bottom: 30px;">
+          <div style="font-family: 'Hind Siliguri', 'Inter', sans-serif; color: #1e293b; background-color: #ffffff; padding: 30px 40px; width: 800px; min-height: 1120px; display: flex; flex-direction: column; box-sizing: border-box;">
+            ${i === 0 ? `
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 5px solid #4f46e5; padding-bottom: 15px; margin-bottom: 15px;">
               <div>
-                <h1 style="font-size: 32px; color: #4338CA; margin: 0; font-weight: 900; letter-spacing: -0.02em;">STUDY ROUTINE SCHEDULE</h1>
-                <p style="font-size: 14px; color: #64748b; margin: 8px 0 0 0; font-weight: 500;">
-                  Page ${i + 1} of ${dateChunks.length} | 
-                  <span style="color: #4338CA; font-weight: 700;">${view === 'deleted' ? 'Deleted Records' : 'Active & Ended Routines'}</span>
-                </p>
+                <h1 style="font-size: 34px; color: #4f46e5; margin: 0; font-weight: 900; letter-spacing: -0.04em; text-transform: uppercase;">Study Routine</h1>
+                <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+                  <span style="font-size: 13px; color: #64748b; font-weight: 700; background: #f1f5f9; padding: 3px 10px; border-radius: 20px;">Page ${i + 1} of ${dateChunks.length}</span>
+                  <span style="font-size: 13px; color: #4f46e5; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em;">${view === 'deleted' ? 'Archive' : 'Active Schedule'}</span>
+                </div>
+              </div>
+              <div style="text-align: right; background: #f8fafc; padding: 12px 20px; border-radius: 20px; border: 1.5px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
+                <p style="font-size: 9px; color: #94a3b8; margin: 0; text-transform: uppercase; letter-spacing: 0.2em; font-weight: 800;">Exported Date</p>
+                <p style="font-size: 16px; color: #1e293b; font-weight: 900; margin: 2px 0 0 0;">${format(new Date(), 'MMM d, yyyy')}</p>
+              </div>
+            </div>
+            
+            <div style="margin-bottom: 20px; background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%); padding: 15px 25px; border-radius: 20px; display: flex; align-items: center; justify-content: space-between; color: white; box-shadow: 0 8px 15px -5px rgba(79, 70, 229, 0.3);">
+              <div style="display: flex; align-items: center; gap: 15px;">
+                <div style="background: rgba(255,255,255,0.15); padding: 8px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.2);">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                </div>
+                <div>
+                  <p style="font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 700; opacity: 0.9; margin: 0;">Schedule Duration</p>
+                  <p style="font-size: 18px; font-weight: 900; margin: 0;">${format(startDate, 'MMM d')} - ${format(endDate, 'MMM d, yyyy')}</p>
+                </div>
               </div>
               <div style="text-align: right;">
-                <p style="font-size: 10px; color: #94a3b8; margin: 0; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700;">Exported On</p>
-                <p style="font-size: 15px; color: #1e293b; font-weight: 800; margin: 2px 0 0 0;">${format(new Date(), 'MMM d, yyyy')}</p>
-                <p style="font-size: 12px; color: #64748b; margin: 0;">${format(new Date(), 'HH:mm')}</p>
+                <p style="font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 700; opacity: 0.9; margin: 0;">Total Coverage</p>
+                <p style="font-size: 18px; font-weight: 900; margin: 0;">${differenceInDays(endDate, startDate) + 1} Days</p>
               </div>
             </div>
-            
-            <div style="margin-bottom: 30px; background: linear-gradient(to right, #f8fafc, #f1f5f9); padding: 16px 24px; border-radius: 16px; border: 1px solid #e2e8f0; display: flex; align-items: center; gap: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
-              <div style="width: 8px; height: 8px; background-color: #4338CA; border-radius: 50%;"></div>
-              <span style="color: #4338CA; font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em;">Report Period:</span>
-              <span style="font-weight: 700; color: #1e293b; font-size: 15px;">${format(startDate, 'MMM d, yyyy')}</span>
-              <span style="color: #cbd5e1; font-weight: 300; font-size: 20px;">&mdash;</span>
-              <span style="font-weight: 700; color: #1e293b; font-size: 15px;">${format(endDate, 'MMM d, yyyy')}</span>
+            ` : `
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #f1f5f9; padding-bottom: 10px; margin-bottom: 15px;">
+              <span style="font-size: 12px; color: #64748b; font-weight: 700;">Page ${i + 1} of ${dateChunks.length}</span>
+              <span style="font-size: 12px; color: #4f46e5; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em;">Study Routine Continued</span>
             </div>
+            `}
             
-            <table style="width: 100%; border-collapse: separate; border-spacing: 0; border-radius: 16px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
-              <thead>
-                <tr style="background-color: #4338CA; color: #ffffff;">
-                  <th style="padding: 18px 16px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 800; border-right: 1px solid rgba(255,255,255,0.1);">DATE</th>
-                  <th style="padding: 18px 16px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 800; border-right: 1px solid rgba(255,255,255,0.1);">Subject</th>
-                  <th style="padding: 18px 16px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 800; border-right: 1px solid rgba(255,255,255,0.1);">Chapter</th>
-                  <th style="padding: 18px 16px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 800;">Topics & Details</th>
-                </tr>
-              </thead>
-              <tbody>
-            `;
+            <div style="flex-grow: 1;">
+              <table style="width: 100%; border-collapse: separate; border-spacing: 0; border-radius: 24px; overflow: hidden; border: 1.5px solid #e2e8f0; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05);">
+                <thead>
+                  <tr style="background-color: #4f46e5; color: #ffffff;">
+                    <th style="padding: 15px 20px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.15em; font-weight: 900; border-right: 1px solid rgba(255,255,255,0.1);">DATE</th>
+                    <th style="padding: 15px 20px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.15em; font-weight: 900; border-right: 1px solid rgba(255,255,255,0.1);">Subject</th>
+                    <th style="padding: 15px 20px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.15em; font-weight: 900; border-right: 1px solid rgba(255,255,255,0.1);">Chapter</th>
+                    <th style="padding: 15px 20px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.15em; font-weight: 900;">Topics & Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+        `;
         
         chunk.forEach((dateStr, idx) => {
           const dayRoutines = groupedRoutines[dateStr] || [];
@@ -781,44 +1162,42 @@ const RoutinePage = ({
           if (dayRoutines.length === 0) {
             htmlContent += `
               <tr style="background-color: ${rowBg};">
-                <td style="padding: 20px 16px; border-bottom: ${isLastDate ? 'none' : '1px solid #e2e8f0'}; border-right: 1px solid #e2e8f0; vertical-align: top; width: 160px;">
-                  <div style="font-weight: 900; color: #1e293b; font-size: 16px;">${format(new Date(dateStr), 'MMM d')}</div>
-                  <div style="font-size: 12px; color: #64748b; margin-top: 4px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">${format(new Date(dateStr), 'EEEE')}</div>
+                <td style="padding: 25px 20px; border-bottom: ${isLastDate ? 'none' : '1.5px solid #f1f5f9'}; border-right: 1.5px solid #f1f5f9; vertical-align: top; width: 160px;">
+                  <div style="font-weight: 900; color: #1e293b; font-size: 18px;">${format(new Date(dateStr), 'MMM d')}</div>
+                  <div style="font-size: 12px; color: #64748b; margin-top: 6px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;">${format(new Date(dateStr), 'EEEE')}</div>
                 </td>
-                <td colspan="3" style="padding: 20px 16px; border-bottom: ${isLastDate ? 'none' : '1px solid #e2e8f0'}; color: #94a3b8; font-style: italic; font-size: 14px; text-align: center; letter-spacing: 0.02em;">No routine scheduled for this date</td>
+                <td colspan="3" style="padding: 25px 20px; border-bottom: ${isLastDate ? 'none' : '1.5px solid #f1f5f9'}; color: #94a3b8; font-style: italic; font-size: 15px; text-align: center; letter-spacing: 0.03em; font-weight: 500;">No routine scheduled for this date</td>
               </tr>
             `;
           } else {
             dayRoutines.forEach((r, rIdx) => {
               const isLastRoutine = rIdx === dayRoutines.length - 1;
-              const borderBottom = (isLastDate && isLastRoutine) ? 'none' : '1px solid #e2e8f0';
+              const borderBottom = (isLastDate && isLastRoutine) ? 'none' : '1.5px solid #f1f5f9';
 
               htmlContent += `
                 <tr style="background-color: ${rowBg};">
                   ${rIdx === 0 ? `
-                    <td style="padding: 24px 16px; border-bottom: ${isLastDate ? 'none' : '1px solid #e2e8f0'}; border-right: 1px solid #e2e8f0; vertical-align: top; width: 150px; min-width: 150px;" rowspan="${dayRoutines.length}">
-                      <div style="font-weight: 900; color: #1e293b; font-size: 18px; line-height: 1;">${format(new Date(dateStr), 'MMM d')}</div>
-                      <div style="font-size: 11px; color: #64748b; margin-top: 6px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; line-height: 1.2;">${format(new Date(dateStr), 'EEEE')}</div>
-                      <div style="margin-top: 16px; font-size: 10px; color: #475569; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em; border-top: 1.5px solid #f1f5f9; padding-top: 10px; line-height: 1.5;">
-                        <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
-                          <span style="color: #94a3b8; font-weight: 600;">START</span>
-                          <span>${format(new Date(r.date), 'MMM d')}</span>
-                        </div>
-                        ${r.end_date ? `
-                        <div style="display: flex; justify-content: space-between;">
-                          <span style="color: #94a3b8; font-weight: 600;">END</span>
-                          <span>${format(new Date(r.end_date), 'MMM d')}</span>
-                        </div>
-                        ` : ''}
-                      </div>
+                    <td style="padding: 30px 20px; border-bottom: ${isLastDate ? 'none' : '1.5px solid #f1f5f9'}; border-right: 1.5px solid #f1f5f9; vertical-align: top; width: 150px; min-width: 150px;" rowspan="${dayRoutines.length}">
+                      <div style="font-weight: 900; color: #1e293b; font-size: 20px; line-height: 1;">${format(new Date(dateStr), 'MMM d')}</div>
+                      <div style="font-size: 12px; color: #64748b; margin-top: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; line-height: 1.2;">${format(new Date(dateStr), 'EEEE')}</div>
                     </td>
                   ` : ''}
-                  <td style="padding: 20px 16px; border-bottom: ${borderBottom}; border-right: 1px solid #e2e8f0; vertical-align: top;">
-                    <div style="color: #4338CA; font-weight: 800; font-size: 15px; line-height: 1.2;">${r.subject}</div>
+                  <td style="padding: 20px; border-bottom: ${borderBottom}; border-right: 1.5px solid #f1f5f9; vertical-align: top;">
+                    <div style="color: #4f46e5; font-weight: 900; font-size: 16px; line-height: 1.2;">${r.subject}</div>
+                    <div style="margin-top: 10px; font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.05em; display: flex; gap: 12px; border-top: 1px solid #f1f5f9; padding-top: 8px;">
+                      <div style="color: #10b981; display: flex; align-items: center; gap: 4px;">
+                        <span>${format(new Date((r as any).original_start), 'MMM d')}</span>
+                      </div>
+                      ${(r as any).original_end ? `
+                      <div style="color: #ef4444; display: flex; align-items: center; gap: 4px;">
+                        <span>${format(new Date((r as any).original_end), 'MMM d')}</span>
+                      </div>
+                      ` : ''}
+                    </div>
                   </td>
-                  <td style="padding: 20px 16px; border-bottom: ${borderBottom}; border-right: 1px solid #e2e8f0; color: #334155; font-size: 14px; font-weight: 600; vertical-align: top; line-height: 1.4;">${r.chapter}</td>
-                  <td style="padding: 20px 16px; border-bottom: ${borderBottom}; color: #475569; font-size: 13px; vertical-align: top; line-height: 1.6; font-weight: 500;">
-                    ${r.topics ? r.topics.split('\n').map(t => `<div style="margin-bottom: 4px; display: flex; gap: 6px;"><span style="color: #4338CA;">&bull;</span><span>${t}</span></div>`).join('') : '<span style="color: #cbd5e1; font-style: italic;">No topics specified</span>'}
+                  <td style="padding: 20px; border-bottom: ${borderBottom}; border-right: 1.5px solid #f1f5f9; color: #334155; font-size: 15px; font-weight: 700; vertical-align: top; line-height: 1.4;">${r.chapter}</td>
+                  <td style="padding: 20px; border-bottom: ${borderBottom}; color: #475569; font-size: 14px; vertical-align: top; line-height: 1.6; font-weight: 600;">
+                    ${r.topics ? r.topics.split('\n').map(t => `<div style="margin-bottom: 6px; display: flex; gap: 8px;"><span style="color: #4f46e5; font-weight: 900;">&bull;</span><span>${t}</span></div>`).join('') : '<span style="color: #cbd5e1; font-style: italic;">No topics specified</span>'}
                   </td>
                 </tr>
               `;
@@ -829,12 +1208,16 @@ const RoutinePage = ({
         htmlContent += `
               </tbody>
             </table>
-            <div style="margin-top: 40px; border-top: 2px solid #f1f5f9; padding-top: 20px; display: flex; justify-content: space-between; align-items: center;">
-              <p style="font-size: 11px; color: #94a3b8; margin: 0; font-weight: 600;">&copy; ${new Date().getFullYear()} Study Planner Pro &bull; Excellence through consistency</p>
-              <div style="display: flex; gap: 15px;">
-                <div style="width: 12px; height: 12px; background-color: #4338CA; border-radius: 3px;"></div>
-                <div style="width: 12px; height: 12px; background-color: #818cf8; border-radius: 3px;"></div>
-                <div style="width: 12px; height: 12px; background-color: #c7d2fe; border-radius: 3px;"></div>
+            </div>
+            <div style="margin-top: auto; padding-top: 30px; border-top: 2px solid #f1f5f9; display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <p style="font-size: 12px; color: #1e293b; margin: 0; font-weight: 800; letter-spacing: 0.02em;">STUDY PLANNER PRO</p>
+                <p style="font-size: 10px; color: #94a3b8; margin: 2px 0 0 0; font-weight: 600;">Excellence through consistency &bull; &copy; ${new Date().getFullYear()}</p>
+              </div>
+              <div style="display: flex; gap: 10px;">
+                <div style="width: 30px; height: 6px; background-color: #4f46e5; border-radius: 10px;"></div>
+                <div style="width: 20px; height: 6px; background-color: #818cf8; border-radius: 10px;"></div>
+                <div style="width: 10px; height: 6px; background-color: #c7d2fe; border-radius: 10px;"></div>
               </div>
             </div>
           </div>
@@ -862,16 +1245,8 @@ const RoutinePage = ({
         const displayWidth = pdfWidth;
         const displayHeight = (imgProps.height * displayWidth) / imgProps.width;
         
-        // If the content is still too tall for the page, we scale it down to fit
-        // This ensures nothing is cut off on A4
-        if (displayHeight > pdfPageHeight) {
-          const scaleFactor = pdfPageHeight / displayHeight;
-          const finalWidth = displayWidth * scaleFactor;
-          const xOffset = (pdfWidth - finalWidth) / 2;
-          pdf.addImage(imgData, 'JPEG', xOffset, 0, finalWidth, pdfPageHeight);
-        } else {
-          pdf.addImage(imgData, 'JPEG', 0, 0, displayWidth, displayHeight);
-        }
+        // We trust the chunking logic to keep it within page height
+        pdf.addImage(imgData, 'JPEG', 0, 0, displayWidth, displayHeight);
       }
 
       if (Capacitor.isNativePlatform()) {
@@ -898,19 +1273,23 @@ const RoutinePage = ({
   };
 
   const handleAddNow = async () => {
-    if (!subject || !chapter) return;
+    if (!subject || !chapter || selectedDates.length === 0) return;
     setIsSaving(true);
     try {
+      const sortedDates = [...selectedDates].sort();
+      
       await onSaveRoutine({
         id: editingRoutineId || undefined,
         subject,
         chapter,
         topics,
-        date: selectedDate,
-        end_date: selectedEndDate || null,
+        date: sortedDates[0],
+        specific_dates: sortedDates,
+        end_date: null,
         reminder_time: reminderTime || null,
         countdown: 0
       });
+      
       resetForm();
     } finally {
       setIsSaving(false);
@@ -922,7 +1301,8 @@ const RoutinePage = ({
     setChapter('');
     setTopics('');
     setReminderTime('');
-    setSelectedEndDate('');
+    setSelectedDates([format(new Date(), 'yyyy-MM-dd')]);
+    setFocusedDate(format(new Date(), 'yyyy-MM-dd'));
     setEditingRoutineId(null);
     setIsAdding(false);
   };
@@ -932,8 +1312,8 @@ const RoutinePage = ({
     setSubject(routine.subject);
     setChapter(routine.chapter);
     setTopics(routine.topics || '');
-    setSelectedDate(routine.date);
-    setSelectedEndDate(routine.end_date || '');
+    setSelectedDates(routine.specific_dates || [routine.date]);
+    setFocusedDate(routine.specific_dates?.[0] || routine.date);
     setReminderTime(routine.reminder_time || '');
     setIsAdding(true);
   };
@@ -953,156 +1333,201 @@ const RoutinePage = ({
           </p>
         </div>
         
-        <div className="flex items-center w-full">
-        <div className={cn(
-          "flex items-center gap-1 p-1.5 rounded-[2rem] shadow-2xl w-full border",
-          darkMode ? "bg-[#111827]/80 border-white/5 shadow-black/40" : "bg-white/80 border-slate-200 shadow-slate-200/50"
-        )}>
-          <div className="flex items-center gap-1 overflow-x-auto scrollbar-hide flex-1">
-            <button
-              onClick={() => setView('active')}
-              className={cn(
-                "px-4 py-2.5 rounded-2xl text-[10px] sm:text-xs font-black transition-all shrink-0",
-                view === 'active' 
-                  ? "bg-transparent text-indigo-500 scale-105" 
-                  : "text-slate-500 hover:text-indigo-500"
-              )}
-            >
-              ACTIVE
-            </button>
-            <button
-              onClick={() => setView('ended')}
-              className={cn(
-                "px-4 py-2.5 rounded-2xl text-[10px] sm:text-xs font-black transition-all shrink-0",
-                view === 'ended' 
-                  ? "bg-transparent text-indigo-500 scale-105" 
-                  : "text-slate-500 hover:text-indigo-500"
-              )}
-            >
-              ENDED
-            </button>
+        <div className="flex flex-col gap-4 w-full">
+          <div className="flex items-center w-full">
+            <div className={cn(
+              "flex items-center gap-1 p-1.5 rounded-[2rem] shadow-2xl w-full border",
+              darkMode ? "bg-[#111827]/80 border-white/5 shadow-black/40" : "bg-white/80 border-slate-200 shadow-slate-200/50"
+            )}>
+              <div className="flex items-center gap-1 overflow-x-auto scrollbar-hide flex-1">
+                <button
+                  onClick={() => setView('active')}
+                  className={cn(
+                    "px-4 py-2.5 rounded-2xl text-[10px] sm:text-xs font-black transition-all shrink-0",
+                    view === 'active' 
+                      ? "bg-transparent text-indigo-500 scale-105" 
+                      : "text-slate-500 hover:text-indigo-500"
+                  )}
+                >
+                  ACTIVE
+                </button>
+                <button
+                  onClick={() => setView('ended')}
+                  className={cn(
+                    "px-4 py-2.5 rounded-2xl text-[10px] sm:text-xs font-black transition-all shrink-0",
+                    view === 'ended' 
+                      ? "bg-transparent text-indigo-500 scale-105" 
+                      : "text-slate-500 hover:text-indigo-500"
+                  )}
+                >
+                  ENDED
+                </button>
 
-            <button
-              onClick={() => setView('deleted')}
-              className={cn(
-                "px-4 py-2.5 rounded-2xl text-[10px] sm:text-xs font-black transition-all shrink-0 flex items-center justify-center",
-                view === 'deleted' 
-                  ? "bg-transparent text-indigo-500 scale-105" 
-                  : "text-slate-500 hover:text-indigo-500"
-              )}
-              title="Trash"
-            >
-              <Trash2 size={18} />
-            </button>
-          </div>
+                <button
+                  onClick={() => setView('deleted')}
+                  className={cn(
+                    "px-4 py-2.5 rounded-2xl text-[10px] sm:text-xs font-black transition-all shrink-0 flex items-center justify-center",
+                    view === 'deleted' 
+                      ? "bg-transparent text-indigo-500 scale-105" 
+                      : "text-slate-500 hover:text-indigo-500"
+                  )}
+                  title="Trash"
+                >
+                  <Trash2 size={18} />
+                </button>
+              </div>
 
-          <div className="flex items-center gap-1 shrink-0">
-            <button
-              onClick={onOpenPrayerTimes}
-              className={cn(
-                "px-3 py-2.5 rounded-2xl text-[10px] sm:text-xs font-black transition-all flex items-center justify-center",
-                darkMode ? "text-slate-400 hover:text-indigo-400" : "text-slate-500 hover:text-indigo-500"
-              )}
-              title="Prayer Times"
-            >
-              <Clock size={18} />
-            </button>
-            <div className="relative">
-              <button
-                onClick={() => setShowPrintOptions(!showPrintOptions)}
-                className={cn(
-                  "px-3 py-2.5 rounded-2xl text-[10px] sm:text-xs font-black transition-all flex items-center justify-center",
-                  darkMode ? "text-slate-400 hover:text-indigo-400" : "text-slate-500 hover:text-indigo-500"
-                )}
-                title="Download Routine"
-              >
-                <Download size={18} />
-              </button>
-              
-              <AnimatePresence>
-                {showPrintOptions && (
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.95, y: 10 }}
-                    animate={{ opacity: 1, scale: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  onClick={() => {
+                    setIsSearchVisible(!isSearchVisible);
+                    if (isSearchVisible) setSearchQuery('');
+                  }}
+                  className={cn(
+                    "px-3 py-2.5 rounded-2xl text-[10px] sm:text-xs font-black transition-all flex items-center justify-center",
+                    darkMode ? "text-slate-400 hover:text-indigo-400" : "text-slate-500 hover:text-indigo-500",
+                    isSearchVisible && "text-indigo-500"
+                  )}
+                  title="Search Routines"
+                >
+                  {isSearchVisible ? <X size={18} /> : <Search size={18} />}
+                </button>
+                <div className="relative">
+                  <button
+                    onClick={() => setShowPrintOptions(!showPrintOptions)}
                     className={cn(
-                      "absolute right-0 top-full mt-4 z-50 w-56 p-5 rounded-[2rem] border shadow-2xl backdrop-blur-2xl",
-                      darkMode ? "bg-[#111827]/95 border-white/10" : "bg-white/95 border-slate-200"
+                      "px-3 py-2.5 rounded-2xl text-[10px] sm:text-xs font-black transition-all flex items-center justify-center",
+                      darkMode ? "text-slate-400 hover:text-indigo-400" : "text-slate-500 hover:text-indigo-500"
                     )}
+                    title="Download Routine"
                   >
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-2 text-indigo-500">
-                        <Printer size={16} />
-                        <span className="font-black text-[10px] uppercase tracking-[0.15em]">Export PDF</span>
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-[9px] font-black uppercase tracking-[0.2em] opacity-40 ml-1">Days</label>
-                        <input 
-                          type="number"
-                          value={printDays}
-                          onChange={(e) => setPrintDays(e.target.value)}
-                          className={cn(
-                            "w-full px-3 py-2 rounded-xl border focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all text-xs font-black",
-                            darkMode ? "bg-white/5 border-white/10 text-white" : "bg-slate-50 border-slate-200 text-slate-900"
-                          )}
-                          min="1"
-                        />
-                      </div>
-                      
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="space-y-2">
-                          <label className="text-[9px] font-black uppercase tracking-[0.2em] opacity-40 ml-1">Start</label>
-                          <input 
-                            type="date"
-                            value={printStartDate}
-                            onChange={(e) => setPrintStartDate(e.target.value)}
-                            className={cn(
-                              "w-full px-2 py-2 rounded-xl border focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all text-[10px] font-black",
-                              darkMode ? "bg-white/5 border-white/10 text-white" : "bg-slate-50 border-slate-200 text-slate-900"
-                            )}
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-[9px] font-black uppercase tracking-[0.2em] opacity-40 ml-1">End</label>
-                          <input 
-                            type="date"
-                            value={printEndDate}
-                            onChange={(e) => setPrintEndDate(e.target.value)}
-                            className={cn(
-                              "w-full px-2 py-2 rounded-xl border focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all text-[10px] font-black",
-                              darkMode ? "bg-white/5 border-white/10 text-white" : "bg-slate-50 border-slate-200 text-slate-900"
-                            )}
-                          />
-                        </div>
-                      </div>
-                      <button
-                        onClick={generatePDF}
-                        disabled={isGeneratingPDF}
-                        className="w-full py-3 rounded-xl bg-indigo-500 text-white text-[10px] font-black hover:bg-indigo-600 transition-all shadow-xl shadow-indigo-500/30 disabled:opacity-50 active:scale-95"
+                    <Download size={18} />
+                  </button>
+                  
+                  <AnimatePresence>
+                    {showPrintOptions && (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                        className={cn(
+                          "absolute right-0 top-full mt-4 z-50 w-56 p-5 rounded-[2rem] border shadow-2xl backdrop-blur-2xl",
+                          darkMode ? "bg-[#111827]/95 border-white/10" : "bg-white/95 border-slate-200"
+                        )}
                       >
-                        {isGeneratingPDF ? "GENERATING..." : "DOWNLOAD PDF"}
-                      </button>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
+                        <div className="space-y-4">
+                          <div className="flex items-center gap-2 text-indigo-500">
+                            <Printer size={16} />
+                            <span className="font-black text-[10px] uppercase tracking-[0.15em]">Export PDF</span>
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-[9px] font-black uppercase tracking-[0.2em] opacity-40 ml-1">Days</label>
+                            <input 
+                              type="number"
+                              value={printDays}
+                              onChange={(e) => setPrintDays(e.target.value)}
+                              className={cn(
+                                "w-full px-3 py-2 rounded-xl border focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all text-xs font-black",
+                                darkMode ? "bg-white/5 border-white/10 text-white" : "bg-slate-50 border-slate-200 text-slate-900"
+                              )}
+                              min="1"
+                            />
+                          </div>
+                          
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-2">
+                              <label className="text-[9px] font-black uppercase tracking-[0.2em] opacity-40 ml-1">Start</label>
+                              <input 
+                                type="date"
+                                value={printStartDate}
+                                onChange={(e) => setPrintStartDate(e.target.value)}
+                                className={cn(
+                                  "w-full px-2 py-2 rounded-xl border focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all text-[10px] font-black",
+                                  darkMode ? "bg-white/5 border-white/10 text-white" : "bg-slate-50 border-slate-200 text-slate-900"
+                                )}
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-[9px] font-black uppercase tracking-[0.2em] opacity-40 ml-1">End</label>
+                              <input 
+                                type="date"
+                                value={printEndDate}
+                                onChange={(e) => setPrintEndDate(e.target.value)}
+                                className={cn(
+                                  "w-full px-2 py-2 rounded-xl border focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all text-[10px] font-black",
+                                  darkMode ? "bg-white/5 border-white/10 text-white" : "bg-slate-50 border-slate-200 text-slate-900"
+                                )}
+                              />
+                            </div>
+                          </div>
+                          <button
+                            onClick={generatePDF}
+                            disabled={isGeneratingPDF}
+                            className="w-full py-3 rounded-xl bg-indigo-500 text-white text-[10px] font-black hover:bg-indigo-600 transition-all shadow-xl shadow-indigo-500/30 disabled:opacity-50 active:scale-95"
+                          >
+                            {isGeneratingPDF ? "GENERATING..." : "DOWNLOAD PDF"}
+                          </button>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
 
-            <button
-              onClick={() => {
-                setView('active');
-                setIsAdding(!isAdding);
-              }}
-              className={cn(
-                "px-3 py-2.5 rounded-2xl transition-all active:scale-95 flex items-center justify-center shrink-0",
-                darkMode ? "text-indigo-400 hover:bg-indigo-500/10" : "text-indigo-600 hover:bg-indigo-50"
-              )}
-              title="Add New Routine"
-            >
-              {isAdding ? <X size={20} strokeWidth={3} /> : <Plus size={20} strokeWidth={3} />}
-            </button>
+                <button
+                  onClick={() => {
+                    setView('active');
+                    setIsAdding(!isAdding);
+                  }}
+                  className={cn(
+                    "px-3 py-2.5 rounded-2xl transition-all active:scale-95 flex items-center justify-center shrink-0",
+                    darkMode ? "text-indigo-400 hover:bg-indigo-500/10" : "text-indigo-600 hover:bg-indigo-50"
+                  )}
+                  title="Add New Routine"
+                >
+                  {isAdding ? <X size={20} strokeWidth={3} /> : <Plus size={20} strokeWidth={3} />}
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
+
+          <AnimatePresence>
+            {isSearchVisible && (
+              <motion.div
+                initial={{ height: 0, opacity: 0, y: -10 }}
+                animate={{ height: 'auto', opacity: 1, y: 0 }}
+                exit={{ height: 0, opacity: 0, y: -10 }}
+                className="overflow-hidden"
+              >
+                <div className={cn(
+                  "p-3 rounded-[2rem] border shadow-2xl",
+                  darkMode ? "bg-[#111827]/80 border-white/5 shadow-black/40" : "bg-white/80 border-slate-200 shadow-slate-200/50"
+                )}>
+                  <div className="relative flex items-center">
+                    <Search className="absolute left-4 text-indigo-500" size={18} />
+                    <input
+                      type="text"
+                      placeholder="Search by subject or chapter..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className={cn(
+                        "w-full pl-12 pr-10 py-3 rounded-2xl text-xs font-black outline-none transition-all",
+                        darkMode ? "bg-white/5 text-white placeholder:text-slate-500" : "bg-slate-50 text-slate-900 placeholder:text-slate-400"
+                      )}
+                      autoFocus
+                    />
+                    {searchQuery && (
+                      <button 
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-4 text-slate-400 hover:text-indigo-500 transition-colors"
+                      >
+                        <X size={16} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </header>
 
@@ -1169,59 +1594,165 @@ const RoutinePage = ({
                     />
                   </div>
                   
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="text-xs font-bold uppercase tracking-wider opacity-60">Start Date</label>
-                      <div className="relative group">
-                        <input 
-                          type="date"
-                          value={selectedDate}
-                          onChange={(e) => setSelectedDate(e.target.value)}
-                          className={cn(
-                            "w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all",
-                            darkMode ? "bg-slate-800 border-slate-700 text-white" : "bg-slate-50 border-slate-200 text-slate-900"
-                          )}
-                        />
-                      </div>
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-xs font-bold uppercase tracking-wider opacity-60">End Date</label>
-                      <div className="relative group">
-                        <input 
-                          type="date"
-                          value={selectedEndDate}
-                          onChange={(e) => setSelectedEndDate(e.target.value)}
-                          className={cn(
-                            "w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all",
-                            darkMode ? "bg-slate-800 border-slate-700 text-white" : "bg-slate-50 border-slate-200 text-slate-900"
-                          )}
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex gap-3 items-center pt-2">
-                    <div className="relative flex-shrink-0 w-28">
-                      <input 
-                        type="time"
-                        value={reminderTime}
-                        onChange={(e) => setReminderTime(e.target.value)}
-                        placeholder="set a time"
-                        className={cn(
-                          "w-full px-3 py-2.5 rounded-xl border focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all text-center",
-                          darkMode ? "bg-slate-800 border-slate-700 text-white" : "bg-slate-50 border-slate-200 text-slate-900"
-                        )}
-                      />
-                    </div>
-
+                  <div className="pt-2">
                     <button
                       onClick={handleAddNow}
-                      disabled={isSaving || !subject || !chapter}
-                      className="flex-1 py-2.5 rounded-xl bg-indigo-500 text-white font-bold hover:bg-indigo-600 transition-all disabled:opacity-50 shadow-lg shadow-indigo-500/20"
+                      disabled={isSaving || !subject || !chapter || selectedDates.length === 0}
+                      className="w-full py-3 rounded-xl bg-indigo-500 text-white font-bold hover:bg-indigo-600 transition-all disabled:opacity-50 shadow-lg shadow-indigo-500/20"
                     >
                       {isSaving ? (editingRoutineId ? "Updating..." : "Adding...") : (editingRoutineId ? "Update Routine" : "Add Routine")}
                     </button>
                   </div>
+
+                  {/* Inline Calendar for Date Selection Preview */}
+                  <div className={cn(
+                    "p-4 rounded-2xl border space-y-3",
+                    darkMode ? "bg-slate-800/50 border-slate-700" : "bg-slate-50 border-slate-200"
+                  )}>
+                    <div className="flex items-center justify-between px-1">
+                      <span className="text-[10px] font-black uppercase tracking-widest opacity-60">
+                        {format(calendarMonth, 'MMMM yyyy')}
+                      </span>
+                      <div className="flex gap-1">
+                        <button 
+                          onClick={() => setCalendarMonth(prev => subMonths(prev, 1))}
+                          className="p-1 hover:bg-indigo-500/10 rounded-lg transition-colors text-indigo-500"
+                        >
+                          <ChevronLeft size={14} />
+                        </button>
+                        <button 
+                          onClick={() => setCalendarMonth(prev => addMonths(prev, 1))}
+                          className="p-1 hover:bg-indigo-500/10 rounded-lg transition-colors text-indigo-500"
+                        >
+                          <ChevronRight size={14} />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-7 gap-1">
+                      {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((day, i) => (
+                        <div key={`header-${i}`} className="text-center text-[8px] font-black text-slate-400 py-1">
+                          {day}
+                        </div>
+                      ))}
+                      {calendarDays.map((day, i) => {
+                        const dateStr = format(day, 'yyyy-MM-dd');
+                        const isSelected = selectedDates.includes(dateStr);
+                        const isFocused = focusedDate === dateStr;
+                        const isCurrentMonth = isSameMonth(day, calendarMonth);
+                        
+                        // Count how many other routines cover this day
+                        const overlappingRoutines = allRoutines.filter(r => {
+                          if (r.id === editingRoutineId) return false;
+                          
+                          if (r.specific_dates && r.specific_dates.length > 0) {
+                            return r.specific_dates.includes(dateStr);
+                          }
+                          
+                          try {
+                            const start = startOfDay(new Date(r.date));
+                            const end = r.end_date ? startOfDay(new Date(r.end_date)) : start;
+                            return isWithinInterval(startOfDay(day), { start, end });
+                          } catch (e) { return false; }
+                        });
+
+                        return (
+                          <div
+                            key={`inline-cal-${i}`}
+                            onClick={() => {
+                              setFocusedDate(dateStr);
+                              setSelectedDates(prev => 
+                                prev.includes(dateStr) 
+                                  ? prev.filter(d => d !== dateStr) 
+                                  : [...prev, dateStr]
+                              );
+                            }}
+                            className={cn(
+                              "aspect-square flex items-center justify-center text-[10px] font-bold rounded-lg transition-all relative cursor-pointer",
+                              !isCurrentMonth && "opacity-20",
+                              isSelected 
+                                ? "bg-indigo-500 text-white shadow-lg shadow-indigo-500/20 z-10" 
+                                : overlappingRoutines.length > 0
+                                  ? darkMode ? "bg-white/10 text-indigo-300" : "bg-indigo-50 text-indigo-400"
+                                  : darkMode ? "text-slate-400 hover:bg-white/5" : "text-slate-600 hover:bg-slate-200",
+                              isFocused && !isSelected && (darkMode ? "ring-2 ring-indigo-500/50" : "ring-2 ring-indigo-500/30")
+                            )}
+                          >
+                            {format(day, 'd')}
+                            {overlappingRoutines.length > 0 && (
+                              <div className="absolute bottom-1 flex gap-0.5 justify-center w-full px-0.5">
+                                {overlappingRoutines.slice(0, 3).map((_, idx) => (
+                                  <div 
+                                    key={idx} 
+                                    className={cn(
+                                      "w-1 h-1 rounded-full",
+                                      isSelected ? "bg-white/60" : "bg-indigo-400/60"
+                                    )} 
+                                  />
+                                ))}
+                                {overlappingRoutines.length > 3 && (
+                                  <div className={cn("w-0.5 h-0.5 rounded-full", isSelected ? "bg-white/30" : "bg-indigo-400/30")} />
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Focused Date Details */}
+                  {focusedDate && (
+                    <div className="space-y-2 animate-in fade-in slide-in-from-top-1 duration-300">
+                      <div className="flex items-center justify-between px-1">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-indigo-500">
+                          {format(new Date(focusedDate), 'MMM d, yyyy')} Schedule
+                        </span>
+                        <span className="text-[9px] font-bold text-slate-400">
+                          {routinesForFocusedDate.length} {routinesForFocusedDate.length === 1 ? 'Routine' : 'Routines'}
+                        </span>
+                      </div>
+                      
+                      <div className="space-y-1.5 max-h-80 overflow-y-auto pr-1 pb-2 custom-scrollbar">
+                        {routinesForFocusedDate.length > 0 ? (
+                          routinesForFocusedDate.map((r, idx) => (
+                            <div 
+                              key={r.id + idx}
+                              className={cn(
+                                "flex items-center gap-3 p-2.5 rounded-xl border transition-all",
+                                darkMode ? "bg-slate-800/80 border-slate-700/50" : "bg-white border-slate-100 shadow-sm"
+                              )}
+                            >
+                              <div className="w-8 h-8 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-500 shrink-0">
+                                <Book size={14} />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className={cn("text-[11px] font-black truncate", darkMode ? "text-slate-200" : "text-slate-700")}>
+                                  {r.subject}
+                                </p>
+                                <p className="text-[9px] font-bold text-slate-500 truncate opacity-70">
+                                  {r.chapter}
+                                </p>
+                              </div>
+                              {r.reminder_time && (
+                                <div className="flex items-center gap-1 px-2 py-1 rounded-md bg-slate-500/5 text-slate-400 shrink-0">
+                                  <Clock size={10} />
+                                  <span className="text-[8px] font-black">{r.reminder_time}</span>
+                                </div>
+                              )}
+                            </div>
+                          ))
+                        ) : (
+                          <div className={cn(
+                            "py-4 text-center rounded-xl border border-dashed",
+                            darkMode ? "border-slate-700 text-slate-500" : "border-slate-200 text-slate-400"
+                          )}>
+                            <p className="text-[10px] font-bold italic">No routines scheduled for this day</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </motion.div>
             </div>
@@ -1578,6 +2109,21 @@ const Badge = ({ count, color }: { count: number; color: string }) => (
 export default function App() {
   const [activeTab, setActiveTab] = useState<'home' | 'overview' | 'settings' | 'routine'>('home');
   
+  const tabs: ('home' | 'routine' | 'overview' | 'settings')[] = ['home', 'routine', 'overview', 'settings'];
+  
+  const handleSwipe = (direction: 'left' | 'right') => {
+    const currentIndex = tabs.indexOf(activeTab);
+    if (direction === 'left') {
+      // Swiping left (finger moves right to left) -> Go to NEXT tab
+      const nextIndex = (currentIndex + 1) % tabs.length;
+      setActiveTab(tabs[nextIndex]);
+    } else {
+      // Swiping right (finger moves left to right) -> Go to PREVIOUS tab
+      const prevIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+      setActiveTab(tabs[prevIndex]);
+    }
+  };
+
   const [sessions, setSessions] = useState<StudySession[]>([]);
   const [routines, setRoutines] = useState<RoutineItem[]>([]);
   const [trash, setTrash] = useState<StudySession[]>([]);
@@ -1649,6 +2195,23 @@ export default function App() {
   const [isGuestMode, setIsGuestMode] = useState(false);
   const [isRecovering, setIsRecovering] = useState(false);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [isFlaskModalOpen, setIsFlaskModalOpen] = useState(false);
+  const [flaskGoalHours, setFlaskGoalHours] = useState(12);
+  const longPressTimer = useRef<NodeJS.Timeout | null>(null);
+
+  const startLongPress = () => {
+    longPressTimer.current = setTimeout(() => {
+      setIsFlaskModalOpen(true);
+    }, 600); // 600ms for long press
+  };
+
+  const endLongPress = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+  
   const [calendarMonth, setCalendarMonth] = useState(new Date());
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
@@ -1661,6 +2224,14 @@ export default function App() {
   const [timerTotalSeconds, setTimerTotalSeconds] = useState(25 * 60);
 
   const [profile, setProfile] = useState<UserProfile>({ name: 'Student', grade: 'Grade 10', school: 'Your School', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix' });
+  const [currentTime, setCurrentTime] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
   
   const [profileForm, setProfileForm] = useState<UserProfile>(profile);
 
@@ -1681,6 +2252,116 @@ export default function App() {
   const [isGeneratingHomePDF, setIsGeneratingHomePDF] = useState(false);
   const [showHomePrintOptions, setShowHomePrintOptions] = useState(false);
   const [homePrintDays, setHomePrintDays] = useState('7');
+  const [includeRoutineInHomePDF, setIncludeRoutineInHomePDF] = useState(false);
+
+  // --- Study Focus Timer Logic ---
+  const [focusTime, setFocusTime] = useState<{ [date: string]: number }>(() => ({}));
+
+  // Fetch Focus Stats from SQL Database
+  useEffect(() => {
+    fetch('/api/focus-stats')
+      .then(res => res.json())
+      .then(data => {
+        setFocusTime(prev => ({ ...prev, ...data }));
+      })
+      .catch(err => console.error("Error fetching SQL focus stats:", err));
+  }, []);
+
+  const [isFocusActive, setIsFocusActive] = useState(() => {
+    return localStorage.getItem('study_focus_active') === 'true';
+  });
+  const [focusStartTime, setFocusStartTime] = useState<number | null>(() => {
+    const saved = localStorage.getItem('study_focus_start_time');
+    return saved ? parseInt(saved) : null;
+  });
+
+  useEffect(() => {
+    if (user) {
+      storage.saveFocusTime(user.id, format(new Date(), 'yyyy-MM-dd'), getTodayFocusTime());
+    }
+    localStorage.setItem('study_focus_data', JSON.stringify(focusTime));
+    
+    // Save to SQL Database (only for today's data to avoid heavy sync)
+    const today = format(new Date(), 'yyyy-MM-dd');
+    if (focusTime[today] !== undefined) {
+      fetch('/api/focus-stats', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: today, duration: focusTime[today] })
+      }).catch(err => console.error("Error saving to SQL database:", err));
+    }
+  }, [focusTime, user]);
+
+  useEffect(() => {
+    localStorage.setItem('study_focus_active', isFocusActive.toString());
+  }, [isFocusActive]);
+
+  useEffect(() => {
+    if (focusStartTime) {
+      localStorage.setItem('study_focus_start_time', focusStartTime.toString());
+    } else {
+      localStorage.removeItem('study_focus_start_time');
+    }
+  }, [focusStartTime]);
+
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isFocusActive && focusStartTime) {
+      interval = setInterval(() => {
+        const today = format(new Date(), 'yyyy-MM-dd');
+        const now = Date.now();
+        const elapsedSeconds = Math.floor((now - focusStartTime) / 1000);
+        
+        if (elapsedSeconds > 0) {
+          setFocusTime(prev => ({
+            ...prev,
+            [today]: (prev[today] || 0) + elapsedSeconds
+          }));
+          setFocusStartTime(now);
+        }
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [isFocusActive, focusStartTime]);
+
+  const toggleFocus = () => {
+    if (isFocusActive) {
+      setIsFocusActive(false);
+      setFocusStartTime(null);
+    } else {
+      setIsFocusActive(true);
+      setFocusStartTime(Date.now());
+    }
+  };
+
+  const getTodayFocusTime = () => {
+    const today = format(new Date(), 'yyyy-MM-dd');
+    return focusTime[today] || 0;
+  };
+
+  const formatFocusTime = (seconds: number) => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  };
+
+  const [focusRange, setFocusRange] = useState<7 | 30 | 365>(7);
+
+  const generateFocusChartData = () => {
+    return Array.from({ length: focusRange }).map((_, i) => {
+      const d = subDays(new Date(), i);
+      const dateStr = format(d, 'yyyy-MM-dd');
+      const seconds = focusTime[dateStr] || 0;
+      return {
+        name: format(d, 'MMM d'),
+        hours: parseFloat((seconds / 3600).toFixed(2)),
+        rawSeconds: seconds
+      };
+    }).reverse();
+  };
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
 
   const lastSupabaseSaveRef = useRef<number>(0);
@@ -1715,28 +2396,15 @@ export default function App() {
       }
     };
 
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
-        saveTimerState(true);
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    let interval: NodeJS.Timeout;
-    let debounceTimer: NodeJS.Timeout;
-
+    // If timer is active, we save every 10 seconds (throttled by the 30s check for Supabase)
+    // If timer is NOT active, we save immediately (debounced)
     if (isTimerActive) {
-      interval = setInterval(() => saveTimerState(), 10000);
+      const interval = setInterval(() => saveTimerState(), 10000);
+      return () => clearInterval(interval);
     } else {
-      debounceTimer = setTimeout(() => saveTimerState(true), 2000);
+      const debounceTimer = setTimeout(() => saveTimerState(true), 2000);
+      return () => clearTimeout(debounceTimer);
     }
-
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      if (interval) clearInterval(interval);
-      if (debounceTimer) clearTimeout(debounceTimer);
-    };
   }, [timerTotalSeconds, timerTimeLeft, isTimerActive, user, isLoading]);
 
   // Timer Interval
@@ -1805,6 +2473,7 @@ export default function App() {
     const trashKey = `cached_trash_${userId}`;
     const routinesKey = `cached_routines_${userId}`;
     const prayerKey = `cached_prayer_settings_${userId}`;
+    const focusKey = `cached_focus_time_${userId}`;
     
     const cachedSessions = localStorage.getItem(cacheKey);
     const cachedTrash = localStorage.getItem(trashKey);
@@ -1812,6 +2481,7 @@ export default function App() {
     const cachedSettings = localStorage.getItem(`cached_settings_${userId}`);
     const cachedProfile = localStorage.getItem(`cached_profile_${userId}`);
     const cachedPrayer = localStorage.getItem(prayerKey);
+    const cachedFocus = localStorage.getItem(focusKey);
     
     try {
       if (cachedSessions) setSessions(JSON.parse(cachedSessions));
@@ -1820,6 +2490,7 @@ export default function App() {
       if (cachedSettings) setSettings(JSON.parse(cachedSettings));
       if (cachedProfile) setProfile(JSON.parse(cachedProfile));
       if (cachedPrayer) setPrayerSettings(JSON.parse(cachedPrayer));
+      if (cachedFocus) setFocusTime(JSON.parse(cachedFocus));
     } catch (e) {
       console.warn('Error parsing cached data:', e);
     }
@@ -1832,13 +2503,14 @@ export default function App() {
         return;
       }
 
-      const [sessionsData, trashData, routinesData, settingsData, profileData, prayerData] = await Promise.all([
+      const [sessionsData, trashData, routinesData, settingsData, profileData, prayerData, focusData] = await Promise.all([
         storage.getSessions(userId),
         storage.getTrash(userId),
         storage.getRoutines(userId),
         storage.getSettings(userId),
         storage.getProfile(userId),
-        storage.getPrayerSettings(userId)
+        storage.getPrayerSettings(userId),
+        storage.getFocusTime(userId)
       ]);
       
       setSessions(sessionsData);
@@ -1847,6 +2519,7 @@ export default function App() {
       setSettings(settingsData);
       setProfile(profileData);
       setPrayerSettings(prayerData);
+      setFocusTime(focusData);
       console.log('[App] Background fetch complete');
     } catch (error) {
       console.warn('Background sync failed:', error);
@@ -1856,12 +2529,22 @@ export default function App() {
   useEffect(() => {
     // Check session validity on mount to handle "Invalid Refresh Token" errors
     const checkSession = async () => {
+      // Try to load last user from cache for instant UI if offline
+      const lastUserId = localStorage.getItem('last_auth_user_id');
+      const wasGuest = localStorage.getItem('is_guest_mode') === 'true';
+      
+      if (lastUserId && lastUserId !== 'guest_user') {
+        // Pre-load data for this user
+        refreshData(lastUserId);
+      } else if (wasGuest) {
+        setIsGuestMode(true);
+        refreshData('guest_user');
+      }
+
       const timeout = setTimeout(() => {
-        if (isAuthLoading) {
-          console.warn('[App] Auth check timed out, proceeding with local state');
-          setIsAuthLoading(false);
-        }
-      }, 5000); // 5 second timeout
+        setIsAuthLoading(false);
+        console.warn('[App] Auth check timed out, proceeding with local state');
+      }, 2500); // Reduced timeout for better UX
 
       try {
         const { data: { session }, error } = await supabase.auth.getSession();
@@ -1870,6 +2553,8 @@ export default function App() {
         if (session?.user) {
           console.log('[App] Initial session found:', session.user.id);
           setUser(session.user);
+          localStorage.setItem('last_auth_user_id', session.user.id);
+          localStorage.setItem('is_guest_mode', 'false');
           setIsAuthLoading(false);
           refreshData(session.user.id);
         } else {
@@ -1880,6 +2565,7 @@ export default function App() {
         if (error) {
           if (error.message.includes('Refresh Token Not Found') || error.message.includes('Invalid Refresh Token')) {
             console.warn('Invalid session detected, signing out to clear state');
+            localStorage.removeItem('last_auth_user_id');
             await supabase.auth.signOut();
           }
         }
@@ -1965,6 +2651,9 @@ export default function App() {
       console.error('Error signing out:', e);
     }
     // Clear all local storage related to auth to be sure
+    localStorage.removeItem('last_auth_user_id');
+    localStorage.removeItem('is_guest_mode');
+    
     const keysToRemove = [];
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
@@ -1983,8 +2672,11 @@ export default function App() {
 
   const handleGuestUser = () => {
     setIsGuestMode(true);
+    localStorage.setItem('is_guest_mode', 'true');
+    localStorage.setItem('last_auth_user_id', 'guest_user');
     setUser({ id: 'guest_user', email: 'guest@example.com' });
     setActiveTab('home');
+    refreshData('guest_user');
   };
 
   // Auto-sync every hour
@@ -2041,6 +2733,7 @@ export default function App() {
       
       // 1. Load from local cache immediately for fast UI
       let hasAnyCache = false;
+      
       try {
         const cachedSessions = localStorage.getItem(`cached_sessions_${user.id}`);
         const cachedTrash = localStorage.getItem(`cached_trash_${user.id}`);
@@ -2063,16 +2756,8 @@ export default function App() {
           const timerData = JSON.parse(cachedTimer);
           setTimerTotalSeconds(timerData.total_seconds);
           setTimerInitialMinutes(Math.floor(timerData.total_seconds / 60));
-          
-          if (timerData.is_active && timerData.last_saved_at) {
-            const elapsed = Math.floor((Date.now() - timerData.last_saved_at) / 1000);
-            const newTimeLeft = Math.max(0, timerData.time_left - elapsed);
-            setTimerTimeLeft(newTimeLeft);
-            setIsTimerActive(newTimeLeft > 0);
-          } else {
-            setTimerTimeLeft(timerData.time_left);
-            setIsTimerActive(false);
-          }
+          setTimerTimeLeft(timerData.time_left);
+          setIsTimerActive(false);
         }
       } catch (e) {
         console.warn('Error loading initial cached data:', e);
@@ -2130,7 +2815,6 @@ export default function App() {
         setRoutines(routinesData);
         setPrayerSettings(prayerData);
         setSchedules(schedulesData);
-
         if (timerData) {
           setTimerTotalSeconds(timerData.total_seconds);
           setTimerInitialMinutes(Math.floor(timerData.total_seconds / 60));
@@ -2247,43 +2931,13 @@ export default function App() {
     
     try {
       if (editingSessionId) {
-        const currentSessions = await storage.getSessions(user.id);
-        const existingSession = currentSessions.find(s => s.id === editingSessionId);
+        const existingSession = sessions.find(s => s.id === editingSessionId);
         if (existingSession) {
           const updatedSession: StudySession = {
             ...existingSession,
             ...newSession,
           };
           await storage.saveSession(user.id, updatedSession);
-
-          // Sync back to routine if linked
-          if (updatedSession.routine_id) {
-            const currentRoutines = await storage.getRoutines(user.id);
-            const routine = currentRoutines.find(r => r.id === updatedSession.routine_id);
-            if (routine) {
-              const updatedRoutine: Partial<RoutineItem> = {
-                id: routine.id,
-                subject: updatedSession.subject,
-                chapter: updatedSession.chapter,
-                topics: updatedSession.topics,
-                reminder_time: updatedSession.reminder_time
-              };
-              await storage.saveRoutine(user.id, updatedRoutine);
-              
-              // Also update OTHER sessions linked to this routine to keep them in sync
-              const otherLinkedSessions = currentSessions.filter(s => s.routine_id === routine.id && s.id !== editingSessionId);
-              if (otherLinkedSessions.length > 0) {
-                const updatedOtherSessions = otherLinkedSessions.map(s => ({
-                  ...s,
-                  subject: updatedSession.subject,
-                  chapter: updatedSession.chapter,
-                  topics: updatedSession.topics,
-                  reminder_time: updatedSession.reminder_time
-                }));
-                await storage.saveSessions(user.id, updatedOtherSessions);
-              }
-            }
-          }
         }
       } else {
         const sessionId = typeof crypto !== 'undefined' && crypto.randomUUID 
@@ -2340,8 +2994,11 @@ export default function App() {
     try {
       const days = parseInt(homePrintDays) || 7;
       
+      // Filter sessions based on toggle
+      const homeSessions = includeRoutineInHomePDF ? sessions : sessions.filter(s => !s.routine_id);
+      
       // Sort sessions by date ascending
-      const sortedSessions = [...sessions].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      const sortedSessions = [...homeSessions].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
       if (sortedSessions.length === 0) {
         setIsGeneratingHomePDF(false);
@@ -2362,22 +3019,47 @@ export default function App() {
 
       // Group sessions by date
       const groupedSessions: { [date: string]: StudySession[] } = {};
-      sessions.forEach(s => {
+      homeSessions.forEach(s => {
         const dateStr = s.date.includes('T') ? format(new Date(s.date), 'yyyy-MM-dd') : s.date;
         if (!groupedSessions[dateStr]) groupedSessions[dateStr] = [];
         groupedSessions[dateStr].push(s);
       });
 
-      // Chunk dates into pages (7 days per page to ensure it fits on A4 comfortably)
-      const daysPerPage = 7;
-      const dateChunks = [];
-      for (let i = 0; i < allDatesInRange.length; i += daysPerPage) {
-        dateChunks.push(allDatesInRange.slice(i, i + daysPerPage));
-      }
+      // Dynamic chunking to prevent page breaks cutting through rows
+      const dateChunks: string[][] = [];
+      let currentChunk: string[] = [];
+      let estimatedHeight = 0;
+      const maxHeight = 1050; // Safe limit for A4
+
+      allDatesInRange.forEach(dateStr => {
+        const daySessions = groupedSessions[dateStr] || [];
+        let dayHeight = 0;
+        
+        if (daySessions.length === 0) {
+          dayHeight = 100;
+        } else {
+          let sessionsHeight = 0;
+          daySessions.forEach(s => {
+            const topicsLineCount = s.topics ? s.topics.split('\n').length : 1;
+            sessionsHeight += 60 + (topicsLineCount * 22);
+          });
+          dayHeight = Math.max(sessionsHeight, 140);
+        }
+        
+        if (estimatedHeight + dayHeight > maxHeight && currentChunk.length > 0) {
+          dateChunks.push(currentChunk);
+          currentChunk = [dateStr];
+          estimatedHeight = 260 + dayHeight;
+        } else {
+          if (currentChunk.length === 0) estimatedHeight = 260; 
+          currentChunk.push(dateStr);
+          estimatedHeight += dayHeight;
+        }
+      });
+      if (currentChunk.length > 0) dateChunks.push(currentChunk);
 
       const pdf = new jsPDF('p', 'mm', 'a4');
       const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfPageHeight = pdf.internal.pageSize.getHeight();
       
       for (let i = 0; i < dateChunks.length; i++) {
         if (i > 0) pdf.addPage();
@@ -2388,41 +3070,61 @@ export default function App() {
         tempContainer.style.left = '-9999px';
         tempContainer.style.top = '0';
         tempContainer.style.width = '800px';
-        tempContainer.style.padding = '40px';
+        tempContainer.style.padding = '0';
         tempContainer.style.backgroundColor = '#ffffff';
         tempContainer.style.color = '#000000';
         tempContainer.style.fontFamily = '"Hind Siliguri", "Inter", sans-serif';
         
         let htmlContent = `
-          <div style="font-family: 'Hind Siliguri', sans-serif; color: #333; background-color: #fff;">
-            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #4F46E5; padding-bottom: 15px; margin-bottom: 20px;">
+          <div style="font-family: 'Hind Siliguri', 'Inter', sans-serif; color: #1e293b; background-color: #ffffff; padding: 30px 40px; width: 800px; display: flex; flex-direction: column; box-sizing: border-box;">
+            ${i === 0 ? `
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 5px solid #4f46e5; padding-bottom: 15px; margin-bottom: 15px;">
               <div>
-                <h1 style="font-size: 28px; color: #4F46E5; margin: 0; font-weight: bold;">Study Diary Report</h1>
-                <p style="font-size: 14px; color: #666; margin: 5px 0 0 0;">Page ${i + 1} of ${dateChunks.length} | ${days} Days Plan</p>
+                <h1 style="font-size: 34px; color: #4f46e5; margin: 0; font-weight: 900; letter-spacing: -0.04em; text-transform: uppercase;">Study Diary</h1>
+                <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+                  <span style="font-size: 13px; color: #64748b; font-weight: 700; background: #f1f5f9; padding: 3px 10px; border-radius: 20px;">Page ${i + 1} of ${dateChunks.length}</span>
+                  <span style="font-size: 13px; color: #4f46e5; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em;">Personal Progress</span>
+                </div>
+              </div>
+              <div style="text-align: right; background: #f8fafc; padding: 12px 20px; border-radius: 20px; border: 1.5px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
+                <p style="font-size: 9px; color: #94a3b8; margin: 0; text-transform: uppercase; letter-spacing: 0.2em; font-weight: 800;">Exported Date</p>
+                <p style="font-size: 16px; color: #1e293b; font-weight: 900; margin: 2px 0 0 0;">${format(new Date(), 'MMM d, yyyy')}</p>
+              </div>
+            </div>
+            
+            <div style="margin-bottom: 20px; background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%); padding: 15px 25px; border-radius: 20px; display: flex; align-items: center; justify-content: space-between; color: white; box-shadow: 0 8px 15px -5px rgba(79, 70, 229, 0.3);">
+              <div style="display: flex; align-items: center; gap: 15px;">
+                <div style="background: rgba(255,255,255,0.15); padding: 8px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.2);">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                </div>
+                <div>
+                  <p style="font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 700; opacity: 0.9; margin: 0;">Report Duration</p>
+                  <p style="font-size: 18px; font-weight: 900; margin: 0;">${format(startDate, 'MMM d')} - ${format(endDate, 'MMM d, yyyy')}</p>
+                </div>
               </div>
               <div style="text-align: right;">
-                <p style="font-size: 11px; color: #999; margin: 0; text-transform: uppercase; letter-spacing: 1px;">Generated on</p>
-                <p style="font-size: 14px; color: #444; font-weight: bold; margin: 0;">${format(new Date(), 'MMM d, yyyy HH:mm')}</p>
+                <p style="font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 700; opacity: 0.9; margin: 0;">Total Coverage</p>
+                <p style="font-size: 18px; font-weight: 900; margin: 0;">${days} Days</p>
               </div>
             </div>
-            
-            <div style="font-size: 14px; color: #444; margin-bottom: 25px; background-color: #f8fafc; padding: 12px 16px; border-radius: 12px; border: 1px solid #e2e8f0; display: flex; align-items: center; gap: 10px;">
-              <span style="color: #4F46E5; font-weight: bold;">Report Period:</span>
-              <span>${format(startDate, 'MMM d, yyyy')}</span>
-              <span style="color: #cbd5e1;">&rarr;</span>
-              <span>${format(endDate, 'MMM d, yyyy')}</span>
+            ` : `
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #f1f5f9; padding-bottom: 10px; margin-bottom: 15px;">
+              <span style="font-size: 12px; color: #64748b; font-weight: 700;">Page ${i + 1} of ${dateChunks.length}</span>
+              <span style="font-size: 12px; color: #4f46e5; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em;">Study Diary Continued</span>
             </div>
+            `}
             
-            <table style="width: 100%; border-collapse: collapse; border-radius: 12px; overflow: hidden; border: 1px solid #e2e8f0;">
-              <thead>
-                <tr style="background-color: #4F46E5; color: #ffffff;">
-                  <th style="padding: 14px 12px; text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; border-bottom: 1px solid rgba(255,255,255,0.2); border-right: 1px solid rgba(255,255,255,0.2);">Date</th>
-                  <th style="padding: 14px 12px; text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; border-bottom: 1px solid rgba(255,255,255,0.2); border-right: 1px solid rgba(255,255,255,0.2);">Subject</th>
-                  <th style="padding: 14px 12px; text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; border-bottom: 1px solid rgba(255,255,255,0.2); border-right: 1px solid rgba(255,255,255,0.2);">Chapter</th>
-                  <th style="padding: 14px 12px; text-align: center; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; border-bottom: 1px solid rgba(255,255,255,0.2); border-right: 1px solid rgba(255,255,255,0.2);">Status</th>
-                </tr>
-              </thead>
-              <tbody>
+            <div>
+              <table style="width: 100%; border-collapse: separate; border-spacing: 0; border-radius: 24px; overflow: hidden; border: 1.5px solid #e2e8f0; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05);">
+                <thead>
+                  <tr style="background-color: #4f46e5; color: #ffffff;">
+                    <th style="padding: 15px 20px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.15em; font-weight: 900; border-right: 1px solid rgba(255,255,255,0.1);">DATE</th>
+                    <th style="padding: 15px 20px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.15em; font-weight: 900; border-right: 1px solid rgba(255,255,255,0.1);">Subject & Chapter</th>
+                    <th style="padding: 15px 20px; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.15em; font-weight: 900; border-right: 1px solid rgba(255,255,255,0.1);">Topics Covered</th>
+                    <th style="padding: 15px 20px; text-align: center; font-size: 11px; text-transform: uppercase; letter-spacing: 0.15em; font-weight: 900;">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
         `;
         
         chunk.forEach((dateStr, idx) => {
@@ -2431,34 +3133,40 @@ export default function App() {
           const rowBg = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
 
           if (daySessions.length === 0) {
-            // Empty day row
             htmlContent += `
               <tr style="background-color: ${rowBg};">
-                <td style="padding: 14px 12px; border-bottom: ${isLastDate ? 'none' : '1px solid #e2e8f0'}; border-right: 1px solid #e2e8f0; vertical-align: top; width: 130px;">
-                  <div style="font-weight: 800; color: #1e293b; font-size: 15px;">${format(new Date(dateStr), 'MMM d')}</div>
-                  <div style="font-size: 11px; color: #64748b; margin-top: 2px; font-weight: 500;">${format(new Date(dateStr), 'EEEE')}</div>
+                <td style="padding: 25px 20px; border-bottom: ${isLastDate ? 'none' : '1.5px solid #f1f5f9'}; border-right: 1.5px solid #f1f5f9; vertical-align: top; width: 140px;">
+                  <div style="font-weight: 900; color: #1e293b; font-size: 18px;">${format(new Date(dateStr), 'MMM d')}</div>
+                  <div style="font-size: 12px; color: #64748b; margin-top: 6px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;">${format(new Date(dateStr), 'EEEE')}</div>
                 </td>
-                <td colspan="3" style="padding: 14px 12px; border-bottom: ${isLastDate ? 'none' : '1px solid #e2e8f0'}; color: #94a3b8; font-style: italic; font-size: 13px; text-align: center; border-right: 1px solid #e2e8f0;">No tasks recorded for this day</td>
+                <td colspan="3" style="padding: 25px 20px; border-bottom: ${isLastDate ? 'none' : '1.5px solid #f1f5f9'}; color: #94a3b8; font-style: italic; font-size: 15px; text-align: center; letter-spacing: 0.03em; font-weight: 500;">No sessions recorded</td>
               </tr>
             `;
           } else {
             daySessions.forEach((s, sIdx) => {
               const isLastSession = sIdx === daySessions.length - 1;
-              const borderBottom = (isLastDate && isLastSession) ? 'none' : '1px solid #e2e8f0';
+              const borderBottom = (isLastDate && isLastSession) ? 'none' : '1.5px solid #f1f5f9';
 
               htmlContent += `
                 <tr style="background-color: ${rowBg};">
                   ${sIdx === 0 ? `
-                    <td style="padding: 14px 12px; border-bottom: ${isLastDate ? 'none' : '1px solid #e2e8f0'}; border-right: 1px solid #e2e8f0; vertical-align: top; width: 130px;" rowspan="${daySessions.length}">
-                      <div style="font-weight: 800; color: #1e293b; font-size: 15px;">${format(new Date(dateStr), 'MMM d')}</div>
-                      <div style="font-size: 11px; color: #64748b; margin-top: 2px; font-weight: 500;">${format(new Date(dateStr), 'EEEE')}</div>
+                    <td style="padding: 30px 20px; border-bottom: ${isLastDate ? 'none' : '1.5px solid #f1f5f9'}; border-right: 1.5px solid #f1f5f9; vertical-align: top; width: 140px;" rowspan="${daySessions.length}">
+                      <div style="font-weight: 900; color: #1e293b; font-size: 20px; line-height: 1;">${format(new Date(dateStr), 'MMM d')}</div>
+                      <div style="font-size: 12px; color: #64748b; margin-top: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; line-height: 1.2;">${format(new Date(dateStr), 'EEEE')}</div>
                     </td>
                   ` : ''}
-                  <td style="padding: 14px 12px; border-bottom: ${borderBottom}; border-right: 1px solid #e2e8f0; color: #4F46E5; font-weight: 700; font-size: 14px;">${s.subject}</td>
-                  <td style="padding: 14px 12px; border-bottom: ${borderBottom}; border-right: 1px solid #e2e8f0; color: #334155; font-size: 13px; font-weight: 500;">${s.chapter}</td>
-                  <td style="padding: 14px 12px; border-bottom: ${borderBottom}; border-right: 1px solid #e2e8f0; text-align: center; width: 110px;">
-                    <div style="display: inline-block; padding: 6px 10px; border-radius: 8px; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; ${s.completed ? 'background-color: #dcfce7; color: #166534; border: 1px solid #bbf7d0;' : 'background-color: #fee2e2; color: #991b1b; border: 1px solid #fecaca;'}">
-                      ${s.completed ? 'Done' : 'Pending'}
+                  <td style="padding: 20px; border-bottom: ${borderBottom}; border-right: 1.5px solid #f1f5f9; vertical-align: top;">
+                    <div style="color: #4f46e5; font-weight: 900; font-size: 16px; line-height: 1.2;">${s.subject}</div>
+                    <div style="margin-top: 8px; color: #475569; font-size: 13px; font-weight: 700;">Chapter: ${s.chapter}</div>
+                  </td>
+                  <td style="padding: 20px; border-bottom: ${borderBottom}; border-right: 1.5px solid #f1f5f9; vertical-align: top;">
+                    <div style="color: #1e293b; font-size: 14px; line-height: 1.6; font-weight: 600;">
+                      ${s.topics ? s.topics.split('\n').map(t => `<div style="margin-bottom: 6px; display: flex; gap: 8px;"><span style="color: #4f46e5; font-weight: 900;">&bull;</span><span>${t}</span></div>`).join('') : '<span style="color: #cbd5e1; font-style: italic;">No topics specified</span>'}
+                    </div>
+                  </td>
+                  <td style="padding: 20px; border-bottom: ${borderBottom}; text-align: center; vertical-align: middle;">
+                    <div style="display: inline-block; padding: 8px 16px; border-radius: 12px; font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 1px; ${s.completed ? 'background-color: #ecfdf5; color: #065f46; border: 2px solid #a7f3d0;' : 'background-color: #fff1f2; color: #9f1239; border: 2px solid #fecdd3;'}">
+                      ${s.completed ? 'COMPLETED' : 'PENDING'}
                     </div>
                   </td>
                 </tr>
@@ -2468,20 +3176,8 @@ export default function App() {
         });
         
         htmlContent += `
-              </tbody>
-            </table>
-            <div style="margin-top: 30px; border-top: 1px solid #e2e8f0; padding-top: 15px; display: flex; justify-content: space-between; align-items: center;">
-              <p style="font-size: 10px; color: #94a3b8; margin: 0;">&copy; ${new Date().getFullYear()} Study Planner - Professional Diary Export</p>
-              <div style="display: flex; gap: 15px;">
-                <div style="display: flex; align-items: center; gap: 5px;">
-                  <div style="width: 8px; height: 8px; border-radius: 2px; background-color: #dcfce7; border: 1px solid #bbf7d0;"></div>
-                  <span style="font-size: 9px; color: #64748b; font-weight: 600;">Completed</span>
-                </div>
-                <div style="display: flex; align-items: center; gap: 5px;">
-                  <div style="width: 8px; height: 8px; border-radius: 2px; background-color: #fee2e2; border: 1px solid #fecaca;"></div>
-                  <span style="font-size: 9px; color: #64748b; font-weight: 600;">Pending</span>
-                </div>
-              </div>
+                </tbody>
+              </table>
             </div>
           </div>
         `;
@@ -2492,33 +3188,21 @@ export default function App() {
         await document.fonts.ready;
 
         const canvas = await html2canvas(tempContainer, {
-          scale: 2,
+          scale: 4,
           useCORS: true,
           logging: false,
           backgroundColor: '#ffffff',
+          windowWidth: 800,
         });
         
         document.body.removeChild(tempContainer);
         
         const imgData = canvas.toDataURL('image/jpeg', 0.95);
         const imgProps = pdf.getImageProperties(imgData);
-        const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
         const pdfPageHeight = pdf.internal.pageSize.getHeight();
+        const imgHeight = (imgProps.height * pdfWidth) / imgProps.width;
         
-        let heightLeft = pdfHeight;
-        let position = 0;
-
-        // Add the first page for this chunk
-        pdf.addImage(imgData, 'JPEG', 0, position, pdfWidth, pdfHeight);
-        heightLeft -= pdfPageHeight;
-
-        // If the chunk overflows the page, add more pages
-        while (heightLeft > 0) {
-          position = heightLeft - pdfHeight;
-          pdf.addPage();
-          pdf.addImage(imgData, 'JPEG', 0, position, pdfWidth, pdfHeight);
-          heightLeft -= pdfPageHeight;
-        }
+        pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, imgHeight);
       }
 
       if (Capacitor.isNativePlatform()) {
@@ -2582,10 +3266,15 @@ export default function App() {
 
   const daysWithSessions = useMemo(() => {
     const set = new Set<string>();
+    
+    // ONLY add dates from COMPLETED sessions
     sessions.forEach(s => {
-      const dateStr = s.date.includes('T') ? format(new Date(s.date), 'yyyy-MM-dd') : s.date;
-      set.add(dateStr);
+      if (s.completed) {
+        const dateStr = s.date.includes('T') ? format(new Date(s.date), 'yyyy-MM-dd') : s.date;
+        set.add(dateStr);
+      }
     });
+
     return set;
   }, [sessions]);
 
@@ -2640,6 +3329,15 @@ export default function App() {
 
   return (
     <div className="h-full h-[100dvh] bg-background flex flex-col md:flex-row w-full max-w-full overflow-hidden border-none">
+      <FlaskModal 
+        isOpen={isFlaskModalOpen} 
+        onClose={() => setIsFlaskModalOpen(false)} 
+        focusTime={getTodayFocusTime()} 
+        isFocusActive={isFocusActive}
+        darkMode={settings.dark_mode}
+        goalHours={flaskGoalHours}
+        onSetGoal={setFlaskGoalHours}
+      />
       {/* Desktop Sidebar */}
       <aside className="hidden md:flex w-64 flex-col bg-card border-none md:border-r border-white/5 light:border-gray-200 p-6 fixed h-full z-50 transition-colors shadow-2xl shadow-black/20">
         <div className="mb-12 px-2">
@@ -2669,8 +3367,27 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 md:ml-64 relative h-full overflow-y-auto overflow-x-hidden w-full scrollbar-hide border-none scroll-smooth touch-pan-y" style={{ WebkitOverflowScrolling: 'touch' }}>
-        <div className="max-w-5xl mx-auto w-full pb-32 md:pb-8">
-          <AnimatePresence mode="wait">
+        <motion.div 
+          onPanEnd={(_, info) => {
+            const swipeThreshold = 50;
+            const velocityThreshold = 0.5;
+            
+            if (Math.abs(info.offset.x) > swipeThreshold || Math.abs(info.velocity.x) > velocityThreshold) {
+              if (Math.abs(info.offset.x) > Math.abs(info.offset.y)) {
+                if (info.offset.x > 0) {
+                  // Finger moved left to right -> Swipe Right
+                  handleSwipe('right');
+                } else {
+                  // Finger moved right to left -> Swipe Left
+                  handleSwipe('left');
+                }
+              }
+            }
+          }}
+          className="min-h-full w-full touch-pan-y"
+        >
+          <div className="max-w-5xl mx-auto w-full pb-32 md:pb-8">
+            <AnimatePresence mode="wait">
             {activeTab === 'home' && (
               <motion.div 
                 key="home"
@@ -2683,76 +3400,39 @@ export default function App() {
               >
                   <header className="sticky top-0 z-40 bg-background/80 backdrop-blur-xl py-6 flex justify-between items-center transition-all">
                     <div className="space-y-1">
-                      <h1 className="text-4xl md:text-6xl font-black tracking-tight text-foreground">Diary</h1>
-                      <div className="flex items-center gap-2 text-gray-400 font-bold text-sm md:text-lg">
-                        <Calendar size={18} className="text-primary" />
-                        {format(selectedDate, 'MMMM d, yyyy')}
+                      <div className="flex flex-col">
+                        <h1 className="text-5xl md:text-7xl font-black tracking-tighter text-primary drop-shadow-[0_0_15px_rgba(88,86,214,0.3)]">
+                          {format(currentTime, 'hh:mm')}
+                        </h1>
+                        <p className="text-xs md:text-sm font-black text-gray-400 uppercase tracking-[0.4em] mt-2 opacity-60">
+                          {format(currentTime, 'MMMM d, yyyy')}
+                        </p>
+                        <div 
+                          onClick={toggleFocus}
+                          onMouseDown={startLongPress}
+                          onMouseUp={endLongPress}
+                          onMouseLeave={endLongPress}
+                          onTouchStart={startLongPress}
+                          onTouchEnd={endLongPress}
+                          className={cn(
+                            "mt-3 inline-flex items-center gap-2 cursor-pointer transition-all active:scale-95 group",
+                            isFocusActive ? "opacity-100" : "opacity-60 hover:opacity-100"
+                          )}
+                        >
+                          <div className={cn(
+                            "w-2 h-2 rounded-full",
+                            isFocusActive ? "bg-primary animate-pulse shadow-[0_0_8px_rgba(88,86,214,0.6)]" : "bg-gray-500"
+                          )} />
+                          <span className={cn(
+                            "text-[11px] font-black tracking-[0.1em] uppercase",
+                            isFocusActive ? "text-primary" : "text-gray-500"
+                          )}>
+                            Focus: {formatFocusTime(getTodayFocusTime())}
+                          </span>
+                        </div>
                       </div>
                     </div>
-                    <div className="flex gap-3">
-                      <button 
-                        onClick={() => setIsScheduleModalOpen(true)}
-                        className="w-12 h-12 md:w-14 md:h-14 flex items-center justify-center bg-card rounded-2xl md:rounded-full border border-white/5 light:border-gray-200 text-primary hover:bg-white/10 light:hover:bg-gray-100 transition-all shadow-xl shadow-primary/5 active:scale-95"
-                        title="Daily Schedule"
-                      >
-                        <Clock size={24} />
-                      </button>
-                      <div className="relative">
-                        <button 
-                          onClick={() => setShowHomePrintOptions(!showHomePrintOptions)}
-                          className="w-12 h-12 md:w-14 md:h-14 flex items-center justify-center bg-card rounded-2xl md:rounded-full border border-white/5 light:border-gray-200 text-primary hover:bg-white/10 light:hover:bg-gray-100 transition-all shadow-xl shadow-primary/5 active:scale-95"
-                        >
-                          <Download size={24} />
-                        </button>
-
-                        <AnimatePresence>
-                          {showHomePrintOptions && (
-                            <motion.div
-                              initial={{ opacity: 0, scale: 0.95, y: 10 }}
-                              animate={{ opacity: 1, scale: 1, y: 0 }}
-                              exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                              className={cn(
-                                "absolute right-0 top-16 z-50 w-48 p-4 rounded-xl border shadow-xl",
-                                settings.dark_mode ? "bg-slate-800 border-slate-700" : "bg-white border-slate-200"
-                              )}
-                            >
-                              <div className="space-y-4">
-                                <div className="flex items-center gap-2 text-indigo-500">
-                                  <Download size={16} />
-                                  <span className="text-xs font-bold uppercase tracking-wider">Download Diary</span>
-                                </div>
-                                
-                                <div className="space-y-2">
-                                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Number of Days</label>
-                                  <input 
-                                    type="number"
-                                    value={homePrintDays}
-                                    onChange={(e) => setHomePrintDays(e.target.value)}
-                                    className={cn(
-                                      "w-full px-3 py-2 rounded-lg text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500",
-                                      settings.dark_mode ? "bg-slate-900 text-white border-slate-700" : "bg-slate-100 text-slate-900 border-slate-200"
-                                    )}
-                                    placeholder="e.g. 7"
-                                  />
-                                </div>
-
-                                <button
-                                  onClick={generateHomePDF}
-                                  disabled={isGeneratingHomePDF}
-                                  className="w-full bg-indigo-500 text-white py-2 rounded-lg text-sm font-bold hover:bg-indigo-600 transition-colors flex items-center justify-center gap-2"
-                                >
-                                  {isGeneratingHomePDF ? (
-                                    <RefreshCw size={16} className="animate-spin" />
-                                  ) : (
-                                    <Check size={16} />
-                                  )}
-                                  {isGeneratingHomePDF ? 'Generating...' : 'Done'}
-                                </button>
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </div>
+                    <div className="flex gap-3 items-center">
                       <button 
                         onClick={() => setIsFullCalendarOpen(true)}
                         className="w-12 h-12 md:w-14 md:h-14 flex items-center justify-center bg-card rounded-2xl md:rounded-full border border-white/5 light:border-gray-200 text-primary hover:bg-white/10 light:hover:bg-gray-100 transition-all shadow-xl shadow-primary/5 active:scale-95"
@@ -2848,68 +3528,10 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* Centered Timer Slot (Absolute) */}
-                        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none z-30">
-                          {!isTimerExpanded && pendingSessions.length > 0 && (
-                            <div className="pointer-events-auto">
-                              <Timer 
-                                layoutId="timer-component"
-                                isExpanded={false}
-                                onToggleExpand={() => setIsTimerExpanded(true)}
-                                initialMinutes={timerInitialMinutes} 
-                                onSetInitialMinutes={setTimerInitialMinutes}
-                                taskName={pendingSessions[0].subject}
-                                onComplete={() => {
-                                  if ('vibrate' in navigator) navigator.vibrate([200, 100, 200]);
-                                  toggleComplete(pendingSessions[0].id);
-                                }}
-                                timeLeft={timerTimeLeft}
-                                setTimeLeft={setTimerTimeLeft}
-                                isActive={isTimerActive}
-                                setIsActive={setIsTimerActive}
-                                totalSeconds={timerTotalSeconds}
-                                setTotalSeconds={setTimerTotalSeconds}
-                                darkMode={settings.dark_mode}
-                              />
-                            </div>
-                          )}
-                        </div>
+                        {/* Centered Timer Slot (Absolute) - REMOVED */}
                       </div>
 
-                      {/* Expanded Timer Slot: Below Header */}
-                      <AnimatePresence mode="popLayout">
-                        {isTimerExpanded && pendingSessions.length > 0 && (
-                          <motion.div 
-                            initial={{ height: 0, opacity: 0 }}
-                            animate={{ height: 'auto', opacity: 1 }}
-                            exit={{ height: 0, opacity: 0 }}
-                            transition={{ duration: 0.4, ease: [0.23, 1, 0.32, 1] }}
-                            className="overflow-hidden flex justify-center"
-                          >
-                            <div className="pb-4">
-                              <Timer 
-                                layoutId="timer-component"
-                                isExpanded={true}
-                                onToggleExpand={() => setIsTimerExpanded(false)}
-                                initialMinutes={timerInitialMinutes} 
-                                onSetInitialMinutes={setTimerInitialMinutes}
-                                taskName={pendingSessions[0].subject}
-                                onComplete={() => {
-                                  if ('vibrate' in navigator) navigator.vibrate([200, 100, 200]);
-                                  toggleComplete(pendingSessions[0].id);
-                                }}
-                                timeLeft={timerTimeLeft}
-                                setTimeLeft={setTimerTimeLeft}
-                                isActive={isTimerActive}
-                                setIsActive={setIsTimerActive}
-                                totalSeconds={timerTotalSeconds}
-                                setTotalSeconds={setTimerTotalSeconds}
-                                darkMode={settings.dark_mode}
-                              />
-                            </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
+                      {/* Expanded Timer Slot: Below Header - REMOVED */}
 
                       {/* Task List */}
                       <Reorder.Group 
@@ -2943,6 +3565,7 @@ export default function App() {
                                 }}
                                 onClick={() => setExpandedTaskId(expandedTaskId === s.id ? null : s.id)}
                                 isExpanded={expandedTaskId === s.id || (expandedTaskId === null && index === 0)}
+                                darkMode={settings.dark_mode}
                               />
                             ))
                           )}
@@ -2988,7 +3611,8 @@ export default function App() {
                               }}
                               onClick={() => setExpandedTaskId(expandedTaskId === s.id ? null : s.id)}
                               isExpanded={expandedTaskId === s.id}
-                            />
+                                darkMode={settings.dark_mode}
+                              />
                           ))
                         )}
                       </AnimatePresence>
@@ -3012,23 +3636,6 @@ export default function App() {
                   onSaveRoutine={async (routine) => {
                     if (user) {
                       await storage.saveRoutine(user.id, routine);
-                      
-                      // Sync with linked sessions if this is an update
-                      if (routine.id) {
-                        const currentSessions = await storage.getSessions(user.id);
-                        const linkedSessions = currentSessions.filter(s => s.routine_id === routine.id);
-                        if (linkedSessions.length > 0) {
-                          const updatedSessions = linkedSessions.map(s => ({
-                            ...s,
-                            subject: routine.subject || s.subject,
-                            chapter: routine.chapter || s.chapter,
-                            topics: routine.topics || s.topics,
-                            reminder_time: routine.reminder_time || s.reminder_time
-                          }));
-                          await storage.saveSessions(user.id, updatedSessions);
-                        }
-                      }
-                      
                       await refreshData(user.id);
                     }
                   }}
@@ -3050,42 +3657,50 @@ export default function App() {
                       await refreshData(user.id);
                     }
                   }}
-                  onAddTask={async (subject, chapter, topics, date, end_date, reminder_time, routine_id) => {
+                  onAddTask={async (routineId, subject, chapter, topics, date, end_date, reminder_time, specific_dates) => {
                     if (user) {
-                      const start = startOfDay(new Date(date));
-                      const end = end_date ? startOfDay(new Date(end_date)) : start;
-                      const diff = differenceInDays(end, start);
-                      const daysCount = diff >= 0 ? diff + 1 : 1;
-                      
-                      const sessionsToSave: StudySession[] = [];
-                      
-                      for (let i = 0; i < daysCount; i++) {
-                        const currentDate = addDays(start, i);
-                        const dateStr = format(currentDate, 'yyyy-MM-dd');
+                      try {
+                        let datesToProcess: string[] = [];
+                        if (specific_dates && specific_dates.length > 0) {
+                          datesToProcess = specific_dates;
+                        } else {
+                          const start = startOfDay(new Date(date));
+                          const end = end_date ? startOfDay(new Date(end_date)) : start;
+                          const diff = differenceInDays(end, start);
+                          const daysCount = diff >= 0 ? diff + 1 : 1;
+                          for (let i = 0; i < daysCount; i++) {
+                            datesToProcess.push(format(addDays(start, i), 'yyyy-MM-dd'));
+                          }
+                        }
                         
-                        const sessionId = typeof crypto !== 'undefined' && crypto.randomUUID 
-                          ? crypto.randomUUID() 
-                          : Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+                        const sessionsToSave: StudySession[] = [];
+                        for (const dateStr of datesToProcess) {
+                          const sessionId = typeof crypto !== 'undefined' && crypto.randomUUID 
+                            ? crypto.randomUUID() 
+                            : Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 
-                        const session: StudySession = {
-                          id: sessionId,
-                          user_id: user.id,
-                          subject,
-                          chapter,
-                          topics,
-                          color: '#5856D6',
-                          icon: 'Book',
-                          date: dateStr,
-                          completed: false,
-                          reminder_time,
-                          routine_id
-                        };
-                        sessionsToSave.push(session);
+                          const session: StudySession = {
+                            id: sessionId,
+                            user_id: user.id,
+                            subject,
+                            chapter,
+                            topics,
+                            color: '#5856D6',
+                            icon: 'Book',
+                            date: dateStr,
+                            completed: false,
+                            reminder_time,
+                            routine_id: routineId
+                          };
+                          sessionsToSave.push(session);
+                        }
+                        
+                        await storage.saveSessions(user.id, sessionsToSave);
+                        await refreshData(user.id);
+                        setActiveTab('home');
+                      } catch (error) {
+                        console.error('Error adding tasks from routine:', error);
                       }
-                      
-                      await storage.saveSessions(user.id, sessionsToSave);
-                      await refreshData(user.id);
-                      setActiveTab('home');
                     }
                   }}
                   onSync={handleManualSync}
@@ -3134,6 +3749,12 @@ export default function App() {
                       const dateStr = format(day, 'yyyy-MM-dd');
                       const dayRoutines = routines.filter(r => {
                         if (r.deleted_at) return false;
+                        
+                        // Check specific dates first
+                        if (r.specific_dates && r.specific_dates.length > 0) {
+                          return r.specific_dates.includes(dateStr);
+                        }
+                        
                         const rStart = r.date.includes('T') ? format(new Date(r.date), 'yyyy-MM-dd') : r.date;
                         if (!r.end_date) return rStart === dateStr;
                         const rEnd = r.end_date.includes('T') ? format(new Date(r.end_date), 'yyyy-MM-dd') : r.end_date;
@@ -3178,6 +3799,107 @@ export default function App() {
                   </div>
                 </Card>
 
+                <div className="grid grid-cols-1 gap-6">
+                  {/* Study Focus Feature */}
+                  <Card className="p-6 hover:bg-white/[0.02] transition-colors">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center">
+                          <Clock size={20} className="text-indigo-500" />
+                        </div>
+                        <div>
+                          <h3 className="font-black text-foreground uppercase tracking-wider text-sm">Study Focus</h3>
+                          <p className="text-xs text-gray-500 font-bold">Time spent focused on learning</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 bg-white/5 p-1 rounded-xl border border-white/10">
+                        <button 
+                          onClick={() => setFocusRange(7)}
+                          className={cn(
+                            "px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all",
+                            focusRange === 7 ? "bg-primary text-white shadow-lg" : "text-gray-500 hover:text-gray-300"
+                          )}
+                        >
+                          7 Days
+                        </button>
+                        <button 
+                          onClick={() => setFocusRange(30)}
+                          className={cn(
+                            "px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all",
+                            focusRange === 30 ? "bg-primary text-white shadow-lg" : "text-gray-500 hover:text-gray-300"
+                          )}
+                        >
+                          30 Days
+                        </button>
+                        <button 
+                          onClick={() => setFocusRange(365)}
+                          className={cn(
+                            "px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all",
+                            focusRange === 365 ? "bg-primary text-white shadow-lg" : "text-gray-500 hover:text-gray-300"
+                          )}
+                        >
+                          1 Year
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="h-64 w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={generateFocusChartData()}>
+                          <defs>
+                            <linearGradient id="focusGradient" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3}/>
+                              <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke={settings.dark_mode ? "#ffffff05" : "#00000005"} vertical={false} />
+                          <XAxis 
+                            dataKey="name" 
+                            axisLine={false}
+                            tickLine={false}
+                            tick={{ fill: settings.dark_mode ? '#4B5563' : '#9CA3AF', fontSize: 10, fontWeight: 800 }}
+                            dy={10}
+                            interval={focusRange === 365 ? 60 : (focusRange === 30 ? 4 : 0)}
+                          />
+                          <YAxis 
+                            axisLine={false}
+                            tickLine={false}
+                            allowDecimals={false}
+                            tick={{ fill: settings.dark_mode ? '#4B5563' : '#9CA3AF', fontSize: 10, fontWeight: 800 }}
+                            tickFormatter={(val) => `${Math.round(val)}h`}
+                          />
+                          <Tooltip 
+                            content={({ active, payload }) => {
+                              if (active && payload && payload.length) {
+                                const data = payload[0].payload;
+                                return (
+                                  <div className={cn(
+                                    "border p-4 rounded-2xl shadow-2xl backdrop-blur-xl",
+                                    settings.dark_mode ? "bg-[#161B22]/90 border-white/10" : "bg-white/90 border-gray-200"
+                                  )}>
+                                    <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2">{data.name}</p>
+                                    <p className="text-lg font-black text-primary">{formatFocusTime(data.rawSeconds)}</p>
+                                  </div>
+                                );
+                              }
+                              return null;
+                            }}
+                          />
+                          <Area 
+                            type="monotone" 
+                            dataKey="hours" 
+                            stroke="#6366f1" 
+                            strokeWidth={3}
+                            fillOpacity={1} 
+                            fill="url(#focusGradient)" 
+                            animationDuration={1500}
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </Card>
+                </div>
+
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                   <Card className="lg:col-span-2 p-6 hover:bg-white/[0.02] light:hover:bg-gray-50 transition-colors cursor-pointer group" onClick={() => setDetailModalData({ type: 'trend', data: { title: 'Activity Trends' } })}>
                     <div className="flex items-center justify-between mb-8">
@@ -3190,18 +3912,30 @@ export default function App() {
                           <p className="text-xs text-gray-500 font-bold">Daily session distribution</p>
                         </div>
                       </div>
-                      <div className="text-right">
-                        <p className="text-[10px] font-black text-gray-500 uppercase tracking-[0.2em]">Weekly Total</p>
-                        <p className="text-2xl font-black text-foreground">{last7DaysSessions.length}</p>
+                      <div className="flex items-center gap-6">
+                        <div className="hidden sm:flex items-center gap-4 mr-4">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full bg-primary" />
+                            <span className="text-[10px] font-black text-gray-500 uppercase tracking-widest">Completed</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full bg-rose-500" />
+                            <span className="text-[10px] font-black text-gray-500 uppercase tracking-widest">Incomplete</span>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-[10px] font-black text-gray-500 uppercase tracking-[0.2em]">Weekly Total</p>
+                          <p className="text-2xl font-black text-foreground">{last7DaysSessions.length}</p>
+                        </div>
                       </div>
                     </div>
                     <div className="h-72 w-full relative">
-                      <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
-                        <AreaChart data={generateChartData(sessions)}>
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={generateChartData(sessions)} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                           <defs>
-                            <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#5856D6" stopOpacity={0.3}/>
-                              <stop offset="95%" stopColor="#5856D6" stopOpacity={0}/>
+                            <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor="#5856D6" stopOpacity={1} />
+                              <stop offset="100%" stopColor="#5856D6" stopOpacity={0.6} />
                             </linearGradient>
                           </defs>
                           <CartesianGrid strokeDasharray="3 3" stroke={settings.dark_mode ? "#ffffff05" : "#00000005"} vertical={false} />
@@ -3209,25 +3943,46 @@ export default function App() {
                             dataKey="name" 
                             axisLine={false}
                             tickLine={false}
-                            tick={{ fill: settings.dark_mode ? '#4B5563' : '#9CA3AF', fontSize: 10, fontWeight: 800 }}
+                            tick={{ fill: settings.dark_mode ? '#4B5563' : '#9CA3AF', fontSize: 11, fontWeight: 800 }}
                             dy={10}
                           />
-                          <YAxis hide />
+                          <YAxis 
+                            axisLine={false}
+                            tickLine={false}
+                            tick={{ fill: settings.dark_mode ? '#4B5563' : '#9CA3AF', fontSize: 10, fontWeight: 800 }}
+                          />
                           <Tooltip 
+                            cursor={{ fill: settings.dark_mode ? '#ffffff05' : '#00000005', radius: [10, 10, 0, 0] }}
                             content={({ active, payload }) => {
                               if (active && payload && payload.length) {
+                                const data = payload[0].payload;
                                 return (
                                   <div className={cn(
                                     "border p-4 rounded-2xl shadow-2xl backdrop-blur-xl",
                                     settings.dark_mode ? "bg-[#161B22]/90 border-white/10" : "bg-white/90 border-gray-200"
                                   )}>
-                                    <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2">{payload[0].payload.name}</p>
-                                    <div className="flex items-center gap-2">
-                                      <div className="w-2 h-2 rounded-full bg-primary" />
-                                      <p className={cn(
-                                        "text-xl font-black",
-                                        settings.dark_mode ? "text-white" : "text-gray-900"
-                                      )}>{payload[0].value} <span className="text-xs font-medium text-gray-400">Sessions</span></p>
+                                    <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-3">{data.name}</p>
+                                    <div className="space-y-3">
+                                      <div className="flex items-center justify-between gap-12">
+                                        <div className="flex items-center gap-2">
+                                          <div className="w-2.5 h-2.5 rounded-full bg-primary shadow-[0_0_8px_rgba(88,86,214,0.5)]" />
+                                          <span className="text-xs font-bold text-gray-400">Completed</span>
+                                        </div>
+                                        <span className="text-sm font-black text-foreground">{data.completed}</span>
+                                      </div>
+                                      <div className="flex items-center justify-between gap-12">
+                                        <div className="flex items-center gap-2">
+                                          <div className="w-2.5 h-2.5 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.5)]" />
+                                          <span className="text-xs font-bold text-gray-400">Incomplete</span>
+                                        </div>
+                                        <span className="text-sm font-black text-foreground">{data.incomplete}</span>
+                                      </div>
+                                      <div className="pt-2 border-t border-white/5 mt-2 flex justify-between items-center">
+                                        <span className="text-[10px] font-black text-gray-500 uppercase tracking-widest">Efficiency</span>
+                                        <span className="text-xs font-black text-primary">
+                                          {data.total > 0 ? Math.round((data.completed / data.total) * 100) : 0}%
+                                        </span>
+                                      </div>
                                     </div>
                                   </div>
                                 );
@@ -3235,16 +3990,23 @@ export default function App() {
                               return null;
                             }}
                           />
-                          <Area 
-                            type="monotone" 
-                            dataKey="count" 
-                            stroke="#5856D6" 
-                            strokeWidth={4} 
-                            fillOpacity={1} 
-                            fill="url(#colorCount)"
-                            animationDuration={2000}
+                          <Bar 
+                            dataKey="completed" 
+                            stackId="a" 
+                            fill="url(#barGradient)" 
+                            radius={[0, 0, 0, 0]} 
+                            barSize={32}
+                            animationDuration={1500}
                           />
-                        </AreaChart>
+                          <Bar 
+                            dataKey="incomplete" 
+                            stackId="a" 
+                            fill={settings.dark_mode ? "#F43F5E30" : "#F43F5E20"} 
+                            radius={[10, 10, 0, 0]} 
+                            barSize={32}
+                            animationDuration={1500}
+                          />
+                        </BarChart>
                       </ResponsiveContainer>
                     </div>
                   </Card>
@@ -3336,7 +4098,6 @@ export default function App() {
                         <p className="text-xs text-gray-500 font-bold">Your latest study sessions</p>
                       </div>
                     </div>
-                    <span className="text-[10px] font-black text-gray-500 uppercase tracking-[0.2em]">Last 6 Sessions</span>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {sessions.slice(-6).reverse().map((s, index) => (
@@ -3350,7 +4111,9 @@ export default function App() {
                         </div>
                         <div className="min-w-0">
                           <p className="font-black text-sm truncate text-foreground tracking-tight">{s.subject}</p>
-                          <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">{format(new Date(s.date), 'MMM d • h:mm a')}</p>
+                          <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">
+                            {format(new Date(s.date), 'MMM d')} • {s.reminder_time ? format(new Date(`2000-01-01T${s.reminder_time}`), 'h:mm a') : 'No time'}
+                          </p>
                         </div>
                       </button>
                     ))}
@@ -3408,20 +4171,6 @@ export default function App() {
 
                 <div className="max-w-3xl mx-auto space-y-8">
                   <Card className="space-y-6">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-white/5 light:bg-gray-100 rounded-xl flex items-center justify-center text-gray-400">
-                          <Languages size={20} />
-                        </div>
-                        <span className="font-bold text-foreground">Language</span>
-                      </div>
-                      <button 
-                        onClick={() => setSettings(s => ({ ...s, language: s.language === 'en' ? 'bn' : 'en' }))}
-                        className="bg-primary text-white px-4 py-2 rounded-xl font-bold text-sm hover:opacity-90 transition-opacity"
-                      >
-                        {settings.language === 'en' ? 'বাংলা' : 'English'}
-                      </button>
-                    </div>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
                         <div className="w-10 h-10 bg-white/5 light:bg-gray-100 rounded-xl flex items-center justify-center text-gray-400">
@@ -3534,7 +4283,8 @@ export default function App() {
               )}
             </AnimatePresence>
           </div>
-        </main>
+        </motion.div>
+      </main>
 
       {/* Detail Modal */}
       <AnimatePresence>
@@ -3551,9 +4301,9 @@ export default function App() {
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="relative w-full max-w-lg bg-card border border-white/10 rounded-[40px] p-8 md:p-10 space-y-8 shadow-2xl overflow-hidden"
+              className="relative w-full max-w-lg bg-card border border-white/10 rounded-[40px] p-8 md:p-10 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
             >
-              <div className="flex justify-between items-center">
+              <div className="flex justify-between items-center mb-8 shrink-0">
                 <div className="flex items-center gap-3">
                   <div className="w-12 h-12 rounded-2xl bg-primary/10 flex items-center justify-center text-primary">
                     {detailModalData.type === 'stat' && <Zap size={24} />}
@@ -3571,31 +4321,64 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="space-y-6">
+              <div className="flex-1 overflow-y-auto scrollbar-hide space-y-8 pr-1 scroll-smooth overscroll-contain">
                 {detailModalData.type === 'trend' && (
                   <div className="space-y-6">
-                    <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
-                      <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest mb-3">Daily Breakdown (Last 7 Days)</p>
-                      <div className="space-y-2">
+                    <div className="p-6 bg-white/5 rounded-[2rem] border border-white/5 shadow-inner">
+                      <p className="text-[10px] font-black text-gray-500 uppercase tracking-[0.2em] mb-6 px-2">Weekly Performance Analysis</p>
+                      <div className="space-y-4">
                         {generateChartData(sessions).map((d, i) => (
-                          <div key={`chart-item-${i}-${d.name}`} className="flex items-center justify-between p-3 bg-white/5 rounded-xl">
-                            <span className="text-sm font-bold">{d.name}</span>
-                            <div className="flex items-center gap-2">
-                              <div className="h-1.5 w-24 bg-white/5 rounded-full overflow-hidden">
-                                <div 
-                                  className="h-full bg-primary transition-all duration-500" 
-                                  style={{ width: `${Math.min(100, (d.count / 5) * 100)}%` }}
-                                />
+                          <div key={`chart-item-${i}-${d.name}`} className="group p-4 bg-white/[0.02] hover:bg-white/[0.05] rounded-2xl border border-white/5 transition-all">
+                            <div className="flex items-center justify-between mb-4">
+                              <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center text-primary font-black text-xs">
+                                  {d.name[0]}
+                                </div>
+                                <div>
+                                  <span className="text-sm font-black text-foreground">{d.name}</span>
+                                  <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">{d.total} Sessions</p>
+                                </div>
                               </div>
-                              <span className="text-xs font-bold text-primary">{d.count}</span>
+                              <div className="text-right">
+                                <span className="text-xs font-black text-primary">{d.total > 0 ? Math.round((d.completed / d.total) * 100) : 0}%</span>
+                                <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Efficiency</p>
+                              </div>
+                            </div>
+                            
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-3">
+                                <div className="flex-1 h-2 bg-white/5 rounded-full overflow-hidden">
+                                  <motion.div 
+                                    initial={{ width: 0 }}
+                                    animate={{ width: `${d.total > 0 ? (d.completed / d.total) * 100 : 0}%` }}
+                                    className="h-full bg-primary shadow-[0_0_10px_rgba(88,86,214,0.4)]" 
+                                  />
+                                </div>
+                                <span className="text-[10px] font-black text-primary w-8 text-right">{d.completed}</span>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <div className="flex-1 h-2 bg-white/5 rounded-full overflow-hidden">
+                                  <motion.div 
+                                    initial={{ width: 0 }}
+                                    animate={{ width: `${d.total > 0 ? (d.incomplete / d.total) * 100 : 0}%` }}
+                                    className="h-full bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.4)] opacity-60" 
+                                  />
+                                </div>
+                                <span className="text-[10px] font-black text-rose-500 w-8 text-right">{d.incomplete}</span>
+                              </div>
                             </div>
                           </div>
                         ))}
                       </div>
                     </div>
-                    <p className="text-xs text-gray-500 text-center italic">
-                      This chart shows your session frequency over the past week. Consistency is key to long-term retention.
-                    </p>
+                    <div className="p-6 bg-primary/5 rounded-[2rem] border border-primary/10 flex items-start gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-primary/20 flex items-center justify-center text-primary shrink-0">
+                        <Zap size={20} />
+                      </div>
+                      <p className="text-xs text-gray-400 font-medium leading-relaxed">
+                        Your consistency is the foundation of your success. This analysis shows your session frequency and completion rate over the past week. Aim for <span className="text-primary font-bold">80%+ efficiency</span> for optimal results.
+                      </p>
+                    </div>
                   </div>
                 )}
 
@@ -3684,12 +4467,14 @@ export default function App() {
                 )}
               </div>
 
-              <button 
-                onClick={() => setDetailModalData(null)}
-                className="w-full py-4 bg-primary text-white rounded-2xl font-bold text-sm shadow-lg shadow-primary/20"
-              >
-                Got it
-              </button>
+              <div className="pt-6 shrink-0">
+                <button 
+                  onClick={() => setDetailModalData(null)}
+                  className="w-full py-4 bg-primary text-white rounded-2xl font-bold text-sm shadow-lg shadow-primary/20"
+                >
+                  Got it
+                </button>
+              </div>
             </motion.div>
           </div>
         )}
@@ -3791,10 +4576,10 @@ export default function App() {
 
       {/* Mobile Bottom Nav */}
       <nav className={cn(
-        "md:hidden fixed bottom-0 left-0 right-0 backdrop-blur-2xl px-6 py-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] flex justify-around items-center z-[100] transform-gpu translate-z-0 pointer-events-auto transition-all duration-500",
+        "md:hidden fixed bottom-0 left-0 right-0 backdrop-blur-md px-6 py-2 flex justify-around items-center z-[100] transform-gpu translate-z-0 pointer-events-auto transition-all duration-500 border-t",
         settings.dark_mode 
-          ? "bg-[#0A0E14]/90 border-t border-white/5 shadow-[0_-10px_40px_rgba(0,0,0,0.5)]" 
-          : "bg-white/90 border-t border-gray-100 shadow-[0_-10px_40px_rgba(0,0,0,0.05)]"
+          ? "bg-black/20 border-white/5 shadow-[0_-10px_40px_rgba(0,0,0,0.2)]" 
+          : "bg-white/20 border-gray-100 shadow-[0_-10px_40px_rgba(0,0,0,0.03)]"
       )}>
         <NavButton active={activeTab === 'home'} onClick={() => setActiveTab('home')} icon={<HomeIcon />} label="HOME" darkMode={settings.dark_mode} />
         <NavButton active={activeTab === 'routine'} onClick={() => setActiveTab('routine')} icon={<Calendar />} label="ROUTINE" darkMode={settings.dark_mode} />
@@ -3861,6 +4646,7 @@ export default function App() {
         sessionsForDate={sessionsForDate}
         daysWithSessions={daysWithSessions}
         setDetailModalData={setDetailModalData}
+        routines={routines}
       />
 
       {/* Modal */}
@@ -3881,7 +4667,91 @@ export default function App() {
               className="relative w-full max-w-md bg-card rounded-[32px] p-6 md:p-8 space-y-6 shadow-2xl border border-white/10 max-h-[90vh] overflow-y-auto scrollbar-hide"
             >
               <div className="flex justify-between items-center">
-                <h2 className="text-2xl font-bold">{editingSessionId ? 'Edit Task' : 'Add Task'}</h2>
+                <div className="flex items-center gap-4">
+                  <h2 className="text-2xl font-bold">{editingSessionId ? 'Edit Task' : 'Add Task'}</h2>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => setIsScheduleModalOpen(true)}
+                      className="w-10 h-10 flex items-center justify-center bg-white/5 rounded-xl border border-white/10 text-primary hover:bg-white/10 transition-all active:scale-95"
+                      title="Daily Schedule"
+                    >
+                      <Clock size={18} />
+                    </button>
+                    <div className="relative">
+                      <button 
+                        onClick={() => setShowHomePrintOptions(!showHomePrintOptions)}
+                        className="w-10 h-10 flex items-center justify-center bg-white/5 rounded-xl border border-white/10 text-primary hover:bg-white/10 transition-all active:scale-95"
+                        title="Download Diary"
+                      >
+                        <Download size={18} />
+                      </button>
+
+                      <AnimatePresence>
+                        {showHomePrintOptions && (
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                            className={cn(
+                              "fixed md:absolute left-1/2 md:left-0 top-1/2 md:top-12 -translate-x-1/2 md:translate-x-0 -translate-y-1/2 md:translate-y-0 z-[110] w-[280px] md:w-48 p-6 md:p-4 rounded-3xl md:rounded-xl border shadow-2xl",
+                              settings.dark_mode ? "bg-slate-900 border-white/10" : "bg-white border-slate-200"
+                            )}
+                          >
+                            <div className="space-y-4">
+                              <div className="flex items-center gap-2 text-indigo-500">
+                                <Download size={16} />
+                                <span className="text-xs font-bold uppercase tracking-wider">Download Diary</span>
+                              </div>
+                              
+                              <div className="space-y-2">
+                                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Number of Days</label>
+                                <input 
+                                  type="number"
+                                  value={homePrintDays}
+                                  onChange={(e) => setHomePrintDays(e.target.value)}
+                                  className={cn(
+                                    "w-full px-3 py-2 rounded-lg text-sm font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500",
+                                    settings.dark_mode ? "bg-slate-900 text-white border-slate-700" : "bg-slate-100 text-slate-900 border-slate-200"
+                                  )}
+                                  placeholder="e.g. 7"
+                                />
+                              </div>
+
+                              <div className="flex items-center justify-between py-1">
+                                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Include Routine</span>
+                                <button
+                                  onClick={() => setIncludeRoutineInHomePDF(!includeRoutineInHomePDF)}
+                                  className={cn(
+                                    "w-8 h-4 rounded-full transition-colors relative",
+                                    includeRoutineInHomePDF ? "bg-indigo-500" : "bg-slate-300"
+                                  )}
+                                >
+                                  <div className={cn(
+                                    "absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full transition-transform duration-200 ease-in-out",
+                                    includeRoutineInHomePDF ? "translate-x-4" : "translate-x-0"
+                                  )} />
+                                </button>
+                              </div>
+
+                              <button
+                                onClick={generateHomePDF}
+                                disabled={isGeneratingHomePDF}
+                                className="w-full bg-indigo-500 text-white py-2 rounded-lg text-sm font-bold hover:bg-indigo-600 transition-colors flex items-center justify-center gap-2"
+                              >
+                                {isGeneratingHomePDF ? (
+                                  <RefreshCw size={16} className="animate-spin" />
+                                ) : (
+                                  <Check size={16} />
+                                )}
+                                {isGeneratingHomePDF ? 'Generating...' : 'Done'}
+                              </button>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  </div>
+                </div>
                 <button onClick={() => { setIsModalOpen(false); setEditingSessionId(null); }} className="p-2 text-gray-400 hover:text-white transition-colors">
                   <X size={24} />
                 </button>
@@ -3910,6 +4780,7 @@ export default function App() {
           setSchedules(newSchedules);
           storage.deleteSchedule(user?.id || 'guest_user', id);
         }}
+        onOpenPrayerTimes={() => setIsPrayerModalOpen(true)}
         darkMode={settings.dark_mode}
       />
       <PrayerModal 
@@ -3939,10 +4810,11 @@ interface ScheduleModalProps {
   schedules: ScheduleItem[];
   onSave: (schedule: ScheduleItem) => void;
   onDelete: (id: string) => void;
+  onOpenPrayerTimes: () => void;
   darkMode: boolean;
 }
 
-function ScheduleModal({ isOpen, onClose, schedules, onSave, onDelete, darkMode }: ScheduleModalProps) {
+function ScheduleModal({ isOpen, onClose, schedules, onSave, onDelete, onOpenPrayerTimes, darkMode }: ScheduleModalProps) {
   const [startTime, setStartTime] = useState('08:00');
   const [endTime, setEndTime] = useState('09:00');
   const [task, setTask] = useState('');
@@ -4019,6 +4891,15 @@ function ScheduleModal({ isOpen, onClose, schedules, onSave, onDelete, darkMode 
                 title={editingId ? "Cancel Edit" : "Add to Schedule"}
               >
                 {editingId ? <X size={24} strokeWidth={2.5} /> : <PlusCircle size={24} strokeWidth={2.5} />}
+              </button>
+              <button 
+                onClick={onOpenPrayerTimes}
+                className={cn(
+                  "w-10 h-10 rounded-xl flex items-center justify-center transition-all active:scale-95 bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20"
+                )}
+                title="Prayer Times"
+              >
+                <Sunrise size={24} strokeWidth={2.5} />
               </button>
             </div>
             <button onClick={onClose} className="p-2 hover:bg-white/5 rounded-xl transition-colors text-gray-400">
@@ -4153,6 +5034,7 @@ interface FullCalendarModalProps {
   sessionsForDate: (date: Date) => StudySession[];
   daysWithSessions: Set<string>;
   setDetailModalData: (data: { type: 'stat' | 'subject' | 'activity' | 'trend'; data: any } | null) => void;
+  routines: RoutineItem[];
 }
 
 function FullCalendarModal({ 
@@ -4188,7 +5070,8 @@ function FullCalendarContent({
   calendarDays, 
   sessionsForDate,
   daysWithSessions,
-  setDetailModalData
+  setDetailModalData,
+  routines
 }: Omit<FullCalendarModalProps, 'isOpen'>) {
   const previewListRef = useRef<HTMLDivElement>(null);
   const [isCalendarCollapsed, setIsCalendarCollapsed] = useState(false);
@@ -4261,7 +5144,12 @@ function FullCalendarContent({
               const isCurrentMonth = isSameMonth(day, calendarMonth);
               const isSel = isSameDay(day, selectedDate);
               const isTod = isToday(day);
-              const hasSess = daysWithSessions.has(format(day, 'yyyy-MM-dd'));
+              const dateKey = format(day, 'yyyy-MM-dd');
+              const hasSess = daysWithSessions.has(dateKey);
+
+              // Check if this day is a routine start or end date specifically for marking
+              const isRoutineStart = routines.some(r => !r.deleted_at && r.date === dateKey);
+              const isRoutineEnd = routines.some(r => !r.deleted_at && r.end_date === dateKey);
 
               return (
                 <button
@@ -4274,16 +5162,20 @@ function FullCalendarContent({
                     "relative aspect-square flex flex-col items-center justify-center transition-all",
                     !isCurrentMonth && "opacity-20",
                     isSel 
-                      ? "bg-danger text-white rounded-full shadow-lg shadow-danger/20 scale-105" 
+                      ? "bg-primary text-white rounded-2xl shadow-lg shadow-primary/20 scale-105" 
                       : hasSess 
-                        ? "bg-danger/15 text-danger rounded-full" 
+                        ? "bg-primary/10 text-primary rounded-2xl" 
                         : "rounded-xl md:rounded-2xl hover:bg-white/5 text-gray-300",
                     isTod && !isSel && "border border-primary/50",
                     isTod && !isSel && !hasSess && "text-primary rounded-xl md:rounded-2xl"
                   )}
                 >
-                  <span className="text-base md:text-lg font-bold">{format(day, 'd')}</span>
-                  {/* Checkmark removed as per user request to replace with red circle for selection */}
+                  <span className="text-base md:text-lg font-bold z-10">{format(day, 'd')}</span>
+                  
+                  {/* Dot indicator for COMPLETED sessions only */}
+                  {hasSess && !isSel && (
+                    <div className="absolute bottom-2 w-1.5 h-1.5 bg-primary rounded-full shadow-[0_0_8px_rgba(79,70,229,0.6)]" />
+                  )}
                 </button>
               );
             })}
@@ -4399,31 +5291,28 @@ function SidebarLink({ active, onClick, icon, label }: { active: boolean; onClic
 function NavButton({ active, onClick, icon, label, darkMode }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string; darkMode: boolean }) {
   return (
     <motion.button 
-      whileTap={{ scale: 0.9 }}
+      whileTap={{ scale: 0.8 }}
+      whileHover={{ scale: 1.1 }}
       onClick={onClick}
       className={cn(
-        "flex flex-col items-center gap-1 transition-all duration-500 relative",
+        "flex flex-col items-center justify-center transition-all duration-500 relative",
         active 
           ? "text-primary" 
           : (darkMode ? "text-gray-500" : "text-gray-400")
       )}
     >
       <div className={cn(
-        "w-12 h-12 flex items-center justify-center rounded-[1.25rem] transition-all duration-500",
+        "w-10 h-10 flex items-center justify-center rounded-full transition-all duration-500",
         active 
-          ? "bg-primary/10 scale-110" 
-          : (darkMode ? "bg-transparent" : "bg-transparent")
+          ? (darkMode ? "bg-primary/20" : "bg-primary/10")
+          : "bg-transparent"
       )}>
         {React.cloneElement(icon as React.ReactElement, { 
-          size: 22, 
+          size: 20, 
           strokeWidth: active ? 2.5 : 2,
           className: cn("transition-all duration-500", active ? "text-primary" : "text-current")
         })}
       </div>
-      <span className={cn(
-        "text-[9px] font-black tracking-tighter transition-all duration-500",
-        active ? "opacity-100 translate-y-0" : "opacity-0 translate-y-1"
-      )}>{label}</span>
     </motion.button>
   );
 }
@@ -4468,7 +5357,7 @@ function StatCard({ icon, label, value, color, onClick, trend }: { icon: React.R
   );
 }
 
-const TaskItem = React.memo(({ session, onToggle, onDelete, onEdit, onClick, isExpanded, dragControls }: { session: StudySession; onToggle: () => void; onDelete: () => void; onEdit: () => void; onClick: () => void; isExpanded: boolean; dragControls: any }) => {
+const TaskItem = React.memo(({ session, onToggle, onDelete, onEdit, onClick, isExpanded, dragControls, darkMode }: { session: StudySession; onToggle: () => void; onDelete: () => void; onEdit: () => void; onClick: () => void; isExpanded: boolean; dragControls: any; darkMode: boolean }) => {
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const deleteTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [isHolding, setIsHolding] = useState(false);
@@ -4537,64 +5426,165 @@ const TaskItem = React.memo(({ session, onToggle, onDelete, onEdit, onClick, isE
       onPointerLeave={handleBoxPointerUp}
       onPointerCancel={handleBoxPointerUp}
       className={cn(
-        "group flex flex-col gap-4 p-4 rounded-2xl transition-all cursor-pointer select-none relative",
-        "will-change-transform", // GPU acceleration hint
-        session.completed ? "bg-white/5 opacity-60" : "bg-card shadow-sm",
-        isDeleting && "scale-[0.98] opacity-80"
+        "group flex flex-col gap-3 p-5 rounded-[32px] transition-all cursor-pointer select-none relative overflow-hidden",
+        "will-change-transform",
+        session.completed 
+          ? (darkMode ? "bg-white/[0.03] opacity-70" : "bg-gray-100 opacity-70")
+          : (darkMode 
+              ? "bg-[#111827] border-white/5 shadow-2xl shadow-black/40 hover:border-indigo-500/30" 
+              : "bg-white border-slate-200 shadow-sm hover:shadow-2xl hover:shadow-indigo-500/5 hover:border-indigo-500/30"),
+        isDeleting && "scale-[0.96] opacity-60"
       )}
       style={{ 
-        transform: 'translateZ(0)' // Force GPU layer
+        transform: 'translateZ(0)'
       }}
     >
-      <div className="flex items-center gap-4 w-full">
+      {/* Dynamic Accent Glow */}
+      {!session.completed && (
+        <div 
+          className={cn(
+            "absolute -right-16 -top-16 w-40 h-40 blur-[60px] transition-opacity duration-700 pointer-events-none",
+            darkMode ? "opacity-[0.12] group-hover:opacity-[0.2]" : "opacity-[0.08] group-hover:opacity-[0.15]"
+          )}
+          style={{ backgroundColor: session.color }}
+        />
+      )}
+
+      {/* Subtle Glass Shine */}
+      <div className={cn(
+        "absolute inset-0 bg-gradient-to-tr from-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-1000 pointer-events-none",
+        darkMode ? "via-white/[0.05]" : "via-black/[0.02]"
+      )} />
+
+      <div className="flex items-center gap-5 w-full relative z-10">
+        {/* Modern Checkbox */}
         <button 
           onClick={(e) => {
             e.stopPropagation();
             onToggle();
           }}
           className={cn(
-            "w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0",
-            session.completed ? "bg-primary border-primary" : "border-white/20 hover:border-primary/50"
+            "w-8 h-8 rounded-2xl border-2 flex items-center justify-center shrink-0 transition-all duration-500 relative",
+            session.completed 
+              ? "bg-emerald-500 border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.4)]" 
+              : (darkMode 
+                  ? "border-white/10 bg-white/5 hover:border-primary/50" 
+                  : "border-slate-200 bg-slate-50 hover:border-primary/50 hover:scale-110")
           )}
         >
-          {session.completed && <Zap size={12} className="text-white fill-white" />}
+          <AnimatePresence mode="wait">
+            {session.completed ? (
+              <motion.svg 
+                key="check"
+                viewBox="0 0 24 24" 
+                fill="none" 
+                stroke="currentColor" 
+                strokeWidth="4" 
+                strokeLinecap="round" 
+                strokeLinejoin="round"
+                className="w-4 h-4 text-white"
+                initial={{ pathLength: 0, opacity: 0 }}
+                animate={{ pathLength: 1, opacity: 1 }}
+                transition={{ duration: 0.4, ease: "easeOut" }}
+              >
+                <motion.path d="M20 6L9 17L4 12" />
+              </motion.svg>
+            ) : (
+              <motion.div 
+                key="dot"
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                className={cn(
+                  "w-2 h-2 rounded-full transition-colors",
+                  darkMode ? "bg-white/20 group-hover:bg-primary/40" : "bg-black/10 group-hover:bg-primary/40"
+                )} 
+              />
+            )}
+          </AnimatePresence>
         </button>
+
+        {/* Content Hierarchy */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <p className={cn("font-bold text-sm truncate", session.completed && "line-through text-gray-500")}>{session.subject}</p>
+          <div className="flex items-center gap-3 mb-1">
+            <p className={cn(
+              "font-bold text-[17px] truncate tracking-tight transition-all duration-500", 
+              session.completed 
+                ? "text-muted-foreground/60 line-through" 
+                : (darkMode ? "text-white group-hover:text-primary" : "text-slate-900 group-hover:text-primary")
+            )}>
+              {session.subject}
+            </p>
+            {session.reminder_time && !session.completed && (
+              <div className={cn(
+                "px-2.5 py-0.5 rounded-full flex items-center gap-2 shrink-0 border",
+                darkMode ? "bg-primary/10 border-primary/20" : "bg-primary/5 border-primary/10"
+              )}>
+                <div className="w-1.5 h-1.5 rounded-full bg-primary shadow-[0_0_8px_rgba(var(--primary-rgb),0.6)] animate-pulse" />
+                <span className="text-[10px] font-black text-primary/80 uppercase tracking-widest">{session.reminder_time}</span>
+              </div>
+            )}
           </div>
-          <p className="text-xs text-gray-500 truncate">{session.chapter}</p>
+          <div className="flex items-center gap-2">
+            <p className={cn(
+              "text-[14px] font-semibold truncate transition-all duration-500",
+              session.completed 
+                ? "text-muted-foreground/40" 
+                : (darkMode ? "text-slate-400 group-hover:text-slate-200" : "text-slate-500 group-hover:text-slate-700")
+            )}>
+              {session.chapter}
+            </p>
+          </div>
         </div>
-        <div className="flex items-center gap-3 shrink-0">
+
+        {/* Action Elements */}
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={(e) => {
               e.stopPropagation();
               onEdit();
             }}
-            className="p-2 text-gray-400 hover:text-primary transition-colors"
+            className={cn(
+              "p-3 rounded-[20px] transition-all duration-300",
+              darkMode 
+                ? "text-slate-400 hover:text-white hover:bg-white/5" 
+                : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"
+            )}
           >
             <Edit size={18} />
           </button>
+          
           <motion.div 
             onPointerDown={handlePointerDown}
             onPointerUp={handlePointerUp}
             onPointerLeave={handlePointerUp}
             onPointerCancel={handlePointerUp}
             animate={{ 
-              scale: isHolding ? 1.1 : 1,
-              boxShadow: isHolding ? "0px 0px 25px rgba(0,0,0,0.3)" : "none"
+              scale: isHolding ? 1.2 : 1,
+              rotate: isHolding ? [0, -8, 8, -8, 0] : 0,
+              boxShadow: isHolding ? `0 0 30px ${session.color}40` : "none"
             }}
-            transition={{ type: "spring", stiffness: 400, damping: 25 }}
-            className="w-10 h-10 rounded-xl flex items-center justify-center cursor-grab active:cursor-grabbing touch-none relative" 
-            style={{ backgroundColor: `${session.color}20`, color: session.color }}
+            transition={{ rotate: { repeat: Infinity, duration: 0.15 } }}
+            className="w-12 h-12 rounded-[22px] flex items-center justify-center cursor-grab active:cursor-grabbing touch-none relative transition-all duration-500 shadow-sm" 
+            style={{ 
+              backgroundColor: `${session.color}15`, 
+              color: session.color,
+              border: `1px solid ${session.color}20`
+            }}
           >
-            <IconRenderer name={session.icon} size={20} />
+            <IconRenderer name={session.icon} size={24} />
+            
+            {/* Jewel Glow */}
+            <div 
+              className="absolute inset-0 rounded-[22px] opacity-0 group-hover:opacity-30 transition-opacity blur-xl"
+              style={{ backgroundColor: session.color }}
+            />
+
             {isHolding && (
               <motion.div 
-                initial={{ scale: 0, opacity: 0.8 }}
-                animate={{ scale: 1.2, opacity: 0 }}
-                transition={{ duration: 0.5, ease: "easeOut" }}
-                className="absolute inset-0 rounded-xl border-2 border-primary pointer-events-none"
+                initial={{ scale: 0.8, opacity: 0.6 }}
+                animate={{ scale: 2, opacity: 0 }}
+                transition={{ duration: 0.7, ease: "circOut" }}
+                className="absolute inset-0 rounded-[22px] border-2 border-primary/40 pointer-events-none"
               />
             )}
           </motion.div>
@@ -4609,11 +5599,29 @@ const TaskItem = React.memo(({ session, onToggle, onDelete, onEdit, onClick, isE
             exit={{ height: 0, opacity: 0 }}
             className="overflow-hidden"
           >
-            <div className="pt-4 border-t border-white/5 flex justify-between items-end gap-4">
-              <div className="space-y-1 flex-1">
-                <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Topics</p>
-                <p className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap">
-                  {session.topics || 'No topics specified'}
+            <div className={cn(
+              "pt-5 mt-2 border-t flex flex-col gap-3",
+              darkMode ? "border-white/5" : "border-black/[0.03]"
+            )}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-2 h-2 rounded-full shadow-[0_0_10px_currentColor]" style={{ backgroundColor: session.color, color: session.color }} />
+                  <p className="text-[11px] font-black text-muted-foreground uppercase tracking-[0.2em]">Topics</p>
+                </div>
+                <div className={cn(
+                  "h-[1px] flex-1 mx-6 bg-gradient-to-r to-transparent",
+                  darkMode ? "from-white/10" : "from-black/[0.05]"
+                )} />
+              </div>
+              <div className={cn(
+                "rounded-2xl p-4 border",
+                darkMode ? "bg-white/[0.02] border-white/5" : "bg-black/[0.01] border-black/[0.02]"
+              )}>
+                <p className={cn(
+                  "text-[14px] leading-relaxed whitespace-pre-wrap font-medium",
+                  darkMode ? "text-slate-400" : "text-slate-500"
+                )}>
+                  {session.topics || 'Focus on the core concepts and complete the assigned exercises.'}
                 </p>
               </div>
             </div>
@@ -4624,7 +5632,7 @@ const TaskItem = React.memo(({ session, onToggle, onDelete, onEdit, onClick, isE
   );
 });
 
-const ReorderableTaskItem = ({ s, index, onToggle, onDelete, onEdit, onClick, isExpanded }: any) => {
+const ReorderableTaskItem = ({ s, index, onToggle, onDelete, onEdit, onClick, isExpanded, darkMode }: any) => {
   const dragControls = useDragControls();
   return (
     <Reorder.Item 
@@ -4652,6 +5660,7 @@ const ReorderableTaskItem = ({ s, index, onToggle, onDelete, onEdit, onClick, is
         onClick={onClick}
         isExpanded={isExpanded}
         dragControls={dragControls}
+        darkMode={darkMode}
       />
     </Reorder.Item>
   );
@@ -4744,17 +5753,25 @@ const SessionForm = ({ onSubmit, darkMode, initialData }: { onSubmit: (data: any
         </div>
 
         <div className="flex gap-3 items-center mt-2">
-          <div className="relative flex-shrink-0 w-32">
+          <div className="relative flex-shrink-0 w-32 group">
             <input 
               type="time"
               value={reminderTime}
               onChange={e => setReminderTime(e.target.value)}
               placeholder="set a time"
               className={cn(
-                "w-full p-4 rounded-input outline-none border transition-colors text-center",
+                "w-full p-4 rounded-input outline-none border transition-colors text-center pr-8",
                 darkMode ? "bg-input border-white/5 focus:border-primary/50 text-white" : "bg-gray-50 border-gray-200 focus:border-primary/50 text-gray-900"
               )}
             />
+            {reminderTime && (
+              <button 
+                onClick={() => setReminderTime('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-rose-500 transition-colors"
+              >
+                <X size={14} />
+              </button>
+            )}
           </div>
 
           <button 
@@ -4767,7 +5784,7 @@ const SessionForm = ({ onSubmit, darkMode, initialData }: { onSubmit: (data: any
                 topics, 
                 color: selectedColor, 
                 icon: selectedIcon,
-                reminder_time: reminderTime || undefined
+                reminder_time: reminderTime || null
               });
               if (!initialData) {
                 setSubject('');
@@ -4804,14 +5821,16 @@ function generateChartData(sessions: StudySession[]) {
 
   return last7Days.map(date => {
     const dateStr = format(date, 'yyyy-MM-dd');
-    const count = sessions.filter(s => {
-      // Use string comparison for yyyy-MM-dd dates to avoid timezone issues
+    const daySessions = sessions.filter(s => {
       const sessionDateStr = s.date.includes('T') ? format(new Date(s.date), 'yyyy-MM-dd') : s.date;
       return sessionDateStr === dateStr;
-    }).length;
+    });
+
     return {
       name: format(date, 'eee'),
-      count: count
+      completed: daySessions.filter(s => s.completed).length,
+      incomplete: daySessions.filter(s => !s.completed).length,
+      total: daySessions.length
     };
   });
 }
